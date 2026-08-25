@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Haki — POS и склад</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div class="login-screen" id="loginScreen">
+    <div class="login-card">
+        <div class="login-logo">H</div>
+        <div class="login-title">Haki</div>
+        <div class="login-subtitle">Вход в систему</div>
+
+        <div class="role-tabs">
+            <div class="role-tab active" data-role="ADMIN">Админ</div>
+            <div class="role-tab" data-role="CASHIER">Кассир</div>
+        </div>
+
+        <div class="form-grid" style="grid-template-columns: 1fr; max-width: none;">
+            <div>
+                <label>Логин</label>
+                <input type="text" id="loginUsername" placeholder="Логин" autocomplete="username">
+            </div>
+            <div>
+                <label>Пароль</label>
+                <input type="password" id="loginPassword" placeholder="Пароль" autocomplete="current-password">
+            </div>
+        </div>
+        <div class="login-error" id="loginError" style="display:none;"></div>
+        <button class="btn primary" id="loginSubmitBtn" style="width:100%; margin-top:6px;">Войти</button>
+    </div>
+</div>
+
+<div id="app" style="display:none;">
+
+
+    <div class="status-bar" id="statusBar">
+        <button class="hamburger-btn" id="hamburgerBtn" aria-label="Меню">
+            <span></span><span></span><span></span>
+        </button>
+        <span id="statusText">🟢 Онлайн — есть интернет</span>
+    </div>
+
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+
+    <!-- SIDEBAR (off-canvas drawer, toggled by hamburger) -->
+    <div class="sidebar" id="sidebar">
+        <div class="brand">
+            <div class="logo">H</div>
+            <div>
+                <div class="name">Haki</div>
+                <div class="role">Владелец</div>
+            </div>
+        </div>
+        <div class="user-line" id="branchLine">Главный филиал</div>
+
+        <div class="nav-item active" data-panel="pos"><span class="icon">🛒</span> Продажи</div>
+        <div class="nav-item" data-panel="receipts"><span class="icon">🧾</span> Чеки</div>
+        <div class="nav-item" data-panel="shifts"><span class="icon">🕒</span> Смены</div>
+        <div class="nav-item" data-panel="expenses"><span class="icon">💸</span> Расходы</div>
+        <div class="nav-item" data-panel="stock-in"><span class="icon">⬇️</span> Приход</div>
+        <div class="nav-item" data-panel="stock-out"><span class="icon">⬆️</span> Расход товара</div>
+        <div class="nav-item admin-only" data-panel="products"><span class="icon">📦</span> Товары</div>
+        <div class="nav-item" data-panel="customers"><span class="icon">💳</span> Клиенты</div>
+        <div class="nav-item admin-only" data-panel="reports"><span class="icon">📊</span> Отчёты</div>
+        <div class="nav-item admin-only" data-panel="dashboard"><span class="icon">📋</span> Дашборд <span class="badge" id="dashboardBadge" style="display:none">0</span></div>
+        <div class="nav-item admin-only" data-panel="branches"><span class="icon">🏬</span> Филиалы</div>
+        <div class="nav-item admin-only" data-panel="cashiers"><span class="icon">👥</span> Кассиры</div>
+        <div class="nav-item admin-only" data-panel="settings"><span class="icon">⚙️</span> Настройки</div>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-online">🟢 Онлайн</div>
+            <div class="nav-item logout"><span class="icon">↩️</span> Выйти</div>
+        </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="main">
+
+        <!-- PANEL: PRODAJI (POS) -->
+        <div class="panel active" id="panel-pos">
+            <div class="shift-banner" id="shiftBanner" style="display:none;"></div>
+            <input class="search-box" id="posSearch" placeholder="🔍 Поиск товара...">
+            <div class="tabs" id="posTabs"></div>
+            <div class="product-list" id="posList"></div>
+        </div>
+
+        <!-- PANEL: CHEKI -->
+        <div class="panel" id="panel-receipts">
+            <h1>Чеки</h1>
+            <table class="data-table">
+                <thead><tr><th>№ чека</th><th>Время</th><th>Кассир</th><th>Оплата</th><th>Клиент</th><th>Сумма</th></tr></thead>
+                <tbody id="receiptsBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: SMENY -->
+        <div class="panel" id="panel-shifts">
+            <h1>Смены</h1>
+
+            <div id="shiftClosedView">
+                <div class="admin-note-box" id="adminNoteBox" style="display:none;"></div>
+                <div class="form-grid">
+                    <div>
+                        <label>Кассир</label>
+                        <select id="shiftOpenCashier"></select>
+                    </div>
+                    <div>
+                        <label>Наличка в кассе на начало смены (UZS)</label>
+                        <input type="number" id="shiftOpenAmount" value="0" min="0">
+                    </div>
+                    <div style="grid-column: span 2;">
+                        <label>Комментарий (необязательно)</label>
+                        <input type="text" id="shiftOpenComment" placeholder="Например: размен получен">
+                    </div>
+                </div>
+                <button class="btn primary" id="shiftOpenBtn">Открыть смену</button>
+            </div>
+
+            <div id="shiftOpenView" style="display:none;">
+                <div class="stat-grid">
+                    <div class="stat-card"><div class="label">Кассир</div><div class="value" id="curShiftCashier" style="font-size:18px;">—</div></div>
+                    <div class="stat-card"><div class="label">Открыта</div><div class="value" id="curShiftOpened" style="font-size:16px;">—</div></div>
+                    <div class="stat-card ok"><div class="label">Наличные (продажи)</div><div class="value" id="curShiftCash">0 UZS</div></div>
+                    <div class="stat-card"><div class="label">Карта (продажи)</div><div class="value" id="curShiftCard">0 UZS</div></div>
+                    <div class="stat-card warn"><div class="label">Расходы из кассы</div><div class="value" id="curShiftExpenses">0 UZS</div></div>
+                    <div class="stat-card"><div class="label">Ожидаемо в кассе сейчас</div><div class="value" id="curShiftExpected">0 UZS</div></div>
+                </div>
+                <button class="btn danger" id="shiftCloseBtn">Закрыть смену</button>
+            </div>
+
+            <h1 style="margin-top:28px;">История смен</h1>
+            <div class="shift-history-grid" id="shiftHistoryGrid"></div>
+        </div>
+
+        <!-- PANEL: RASHODY (kassovye) -->
+        <div class="panel" id="panel-expenses">
+            <h1>Расходы</h1>
+            <p style="color:var(--text-dim); font-size:13px;">Кассовый расход (например: вода, такси) — списывается из наличных текущей смены. Требуется открытая смена.</p>
+            <div class="form-grid">
+                <div>
+                    <label>Сумма (UZS)</label>
+                    <input type="number" id="expAmount" min="1" placeholder="50000">
+                </div>
+                <div>
+                    <label>Комментарий</label>
+                    <input type="text" id="expComment" placeholder="Например: вода для кухни">
+                </div>
+            </div>
+            <button class="btn danger" id="expSubmit">Добавить расход</button>
+
+            <h1 style="margin-top:28px;">История расходов</h1>
+            <table class="data-table">
+                <thead><tr><th>Время</th><th>Сумма</th><th>Комментарий</th><th>Кассир</th></tr></thead>
+                <tbody id="expHistoryBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: PRIHOD (tovar) -->
+        <div class="panel" id="panel-stock-in">
+            <h1>Приход товара</h1>
+            <div class="form-grid">
+                <div>
+                    <label>Товар</label>
+                    <select id="inProductSelect"></select>
+                </div>
+                <div>
+                    <label>Количество</label>
+                    <input type="number" id="inQty" value="1" min="1">
+                </div>
+                <div style="grid-column: span 2;">
+                    <label>Комментарий (напр. поставщик)</label>
+                    <input type="text" id="inComment" placeholder="Например: поставка от 24.08">
+                </div>
+            </div>
+            <button class="btn primary" id="inSubmit">Оприходовать</button>
+
+            <h1 style="margin-top:28px;">История прихода</h1>
+            <table class="data-table">
+                <thead><tr><th>Время</th><th>Товар</th><th>Кол-во</th><th>Комментарий</th></tr></thead>
+                <tbody id="inHistoryBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: RASHOD TOVARA -->
+        <div class="panel" id="panel-stock-out">
+            <h1>Расход / списание товара</h1>
+            <p style="color:var(--text-dim); font-size:13px;">Например: порча, недостача, внутреннее использование. Это про товар на складе, не про деньги в кассе.</p>
+            <div class="form-grid">
+                <div>
+                    <label>Товар</label>
+                    <select id="outProductSelect"></select>
+                </div>
+                <div>
+                    <label>Количество</label>
+                    <input type="number" id="outQty" value="1" min="1">
+                </div>
+                <div style="grid-column: span 2;">
+                    <label>Причина списания</label>
+                    <input type="text" id="outComment" placeholder="Например: порча">
+                </div>
+            </div>
+            <button class="btn danger" id="outSubmit">Списать</button>
+
+            <h1 style="margin-top:28px;">История расхода товара</h1>
+            <table class="data-table">
+                <thead><tr><th>Время</th><th>Товар</th><th>Кол-во</th><th>Причина</th></tr></thead>
+                <tbody id="outHistoryBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: TOVARY -->
+        <div class="panel" id="panel-products">
+            <h1>Товары</h1>
+            <div class="toolbar">
+                <button class="btn primary" id="addProductBtn">+ Добавить товар</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Название</th><th>Категория</th><th>Цена</th><th>Остаток</th><th></th></tr></thead>
+                <tbody id="productsBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: KLIENTY -->
+        <div class="panel" id="panel-customers">
+            <h1>Клиенты</h1>
+            <p style="color:var(--text-dim); font-size:13px;">Бонусный счёт: клиент получает 1% от суммы каждой покупки на счёт, который можно списать в следующий раз.</p>
+            <table class="data-table">
+                <thead><tr><th>Телефон</th><th>Бонусный баланс</th><th>Долг</th><th>Всего куплено</th></tr></thead>
+                <tbody id="customersBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: OTCHETY -->
+        <div class="panel" id="panel-reports">
+            <h1>Отчёты</h1>
+            <p style="color:var(--text-dim);">Раздел в разработке.</p>
+        </div>
+
+        <!-- PANEL: DASHBOARD -->
+        <div class="panel" id="panel-dashboard">
+            <div class="dash-header">
+                <div>
+                    <h1 style="margin-bottom:2px;">Дашборд</h1>
+                    <div style="color:var(--text-dim); font-size:13px;">Касса, смены и продажи</div>
+                </div>
+            </div>
+
+            <div class="period-tabs" id="periodTabs">
+                <div class="period-tab active" data-period="today">Сегодня</div>
+                <div class="period-tab" data-period="7d">7 дней</div>
+                <div class="period-tab" data-period="30d">30 дней</div>
+            </div>
+
+            <div class="stat-grid">
+                <div class="stat-card"><div class="label">Открытых смен</div><div class="value" id="statOpenShifts">0</div></div>
+                <div class="stat-card ok"><div class="label">Выручка за период</div><div class="value" id="statRevenue">0 UZS</div></div>
+                <div class="stat-card"><div class="label">Наличные</div><div class="value" id="statCash">0 UZS</div></div>
+                <div class="stat-card"><div class="label">Карта</div><div class="value" id="statCard">0 UZS</div></div>
+            </div>
+
+            <h1>Касса</h1>
+            <div class="payment-tabs" id="paymentTabs">
+                <div class="payment-tab active" data-method="all">Все</div>
+                <div class="payment-tab" data-method="cash">Наличные</div>
+                <div class="payment-tab" data-method="card">Карта</div>
+                <div class="payment-tab" data-method="mixed">Смешанная</div>
+            </div>
+            <div id="paymentSummaryLine" style="color:var(--text-dim); font-size:13px; margin-bottom:20px;">0 чек. · 0 UZS</div>
+
+            <h1>Открыты сейчас</h1>
+            <div class="shift-history-grid" id="openShiftsGrid">
+                <div class="cart-empty" style="grid-column:1/-1;">Нет открытых смен</div>
+            </div>
+
+            <h1 style="margin-top:24px;">Товары на исходе</h1>
+            <table class="data-table">
+                <thead><tr><th>Название</th><th>Остаток</th><th>Минимум</th></tr></thead>
+                <tbody id="lowStockBody"></tbody>
+            </table>
+
+            <h1 style="margin-top:24px;">История смен</h1>
+            <div class="shift-history-grid" id="dashShiftHistoryGrid"></div>
+        </div>
+
+        <!-- PANEL: FILIALY -->
+        <div class="panel" id="panel-branches">
+            <h1>Филиалы</h1>
+            <div class="toolbar">
+                <button class="btn primary" id="addBranchBtn">+ Добавить филиал</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Название</th><th>Адрес</th><th></th></tr></thead>
+                <tbody id="branchesBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: KASSIRY -->
+        <div class="panel" id="panel-cashiers">
+            <h1>Кассиры</h1>
+            <div class="toolbar">
+                <button class="btn primary" id="addCashierBtn">+ Добавить кассира</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Имя</th><th>Роль</th><th>Логин</th><th>Филиал</th><th></th></tr></thead>
+                <tbody id="cashiersBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: NASTROYKI -->
+        <div class="panel" id="panel-settings">
+            <h1>Настройки</h1>
+            <h1 style="font-size:15px; margin-top:0;">Оставить сумму для следующей смены</h1>
+            <p style="color:var(--text-dim); font-size:13px;">Владелец может оставить сумму и комментарий — кассир увидит подсказку, когда откроет следующую смену.</p>
+            <div class="form-grid">
+                <div>
+                    <label>Сумма (UZS)</label>
+                    <input type="number" id="settingsNoteAmount" min="0" placeholder="500000">
+                </div>
+                <div>
+                    <label>Комментарий</label>
+                    <input type="text" id="settingsNoteComment" placeholder="Оставил на размен">
+                </div>
+            </div>
+            <button class="btn primary" id="settingsNoteBtn">Сохранить подсказку</button>
+        </div>
+
+    </div>
+
+    <!-- CART -->
+    <div class="cart">
+        <div class="cart-title">Текущий чек</div>
+        <div class="cart-total" id="cartTotal">0 UZS</div>
+        <div class="cart-items" id="cartItems">
+            <div class="cart-empty">Корзина пуста</div>
+        </div>
+        <div class="cart-perforation"></div>
+        <button class="cart-clear" id="cartClearBtn">Очистить</button>
+        <button class="pay-btn" id="payBtn" disabled>ОПЛАТИТЬ 0 UZS</button>
+    </div>
+
+</div>
+
+<!-- PAYMENT MODAL -->
+<div class="modal-backdrop" id="payModalBackdrop">
+    <div class="modal">
+        <div class="modal-title">Оплата чека</div>
+        <div class="modal-total" id="payModalTotal">0 UZS</div>
+
+        <div class="pay-method-tabs">
+            <div class="pay-method-tab active" data-method="CASH">Наличные</div>
+            <div class="pay-method-tab" data-method="CARD">Карта</div>
+            <div class="pay-method-tab" data-method="MIXED">Смешанная</div>
+            <div class="pay-method-tab debt-tab" data-method="DEBT">Долг</div>
+        </div>
+        <div class="debt-hint" id="debtHint" style="display:none;">
+            💳 Вся сумма чека уйдёт в долг клиенту. Укажите телефон клиента ниже — это обязательно.
+        </div>
+
+        <div id="mixedPayFields" style="display:none;">
+            <div class="form-grid">
+                <div>
+                    <label>Наличными</label>
+                    <input type="number" id="mixedCashInput" min="0" value="0">
+                </div>
+                <div>
+                    <label>Картой</label>
+                    <input type="number" id="mixedCardInput" min="0" value="0">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-grid" style="margin-top:8px;">
+            <div style="grid-column: span 2;">
+                <label>Телефон клиента (необязательно, для бонусов)</label>
+                <input type="text" id="payCustomerPhone" placeholder="+998 90 123 45 67">
+            </div>
+        </div>
+        <div id="bonusInfoBox" style="display:none;"></div>
+
+        <div class="modal-actions">
+            <button class="btn" id="payModalCancel">Отмена</button>
+            <button class="btn primary" id="payModalConfirm">Подтвердить оплату</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
