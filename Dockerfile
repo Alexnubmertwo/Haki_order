@@ -12,4 +12,5 @@ WORKDIR /app
 COPY --from=build /app/target/haki-pos-backend-0.1.0.jar app.jar
 ENV TZ=Asia/Tashkent
 EXPOSE 8080
-ENTRYPOINT ["java", "-Duser.timezone=Asia/Tashkent", "-XX:MaxRAMPercentage=70", "-jar", "app.jar"]
+# SerialGC + C1: men'she pamyati i bystree start (vazhno na besplatnom tarife, gde server zasypaet)
+ENTRYPOINT ["java", "-Duser.timezone=Asia/Tashkent", "-XX:MaxRAMPercentage=70", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Xss512k", "-Dspring.jmx.enabled=false", "-jar", "app.jar"]

@@ -9,6 +9,7 @@ let foundCustomer = null;    // customer looked up in the payment modal
 let selectedPayMethod = "CASH";
 let dashboardPeriod = "today";
 let dashboardPayMethod = "all";
+let dashboardBreakdown = null; // razbivka po sposobam oplaty, prihodit vmeste s summary
 
 // kassir, ot imeni kotorogo sovershayutsya deystviya - zapolnyaetsya posle logina.
 let CASHIER_NAME = "";
@@ -34,12 +35,20 @@ document.querySelectorAll(".role-tab").forEach(tab => {
 document.getElementById("loginSubmitBtn").addEventListener("click", doLogin);
 document.getElementById("loginPassword").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 
+let loginInFlight = false;
+
 async function doLogin() {
+    if (loginInFlight) return;
     const username = document.getElementById("loginUsername").value.trim();
     const password = document.getElementById("loginPassword").value;
     const errBox = document.getElementById("loginError");
+    const btn = document.getElementById("loginSubmitBtn");
     errBox.style.display = "none";
     if (!username || !password) { errBox.textContent = "Введите логин и пароль"; errBox.style.display = "block"; return; }
+    loginInFlight = true;
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Входим…";
     try {
         const res = await fetch(API + "/auth/login", {
             method: "POST",
@@ -53,6 +62,10 @@ async function doLogin() {
     } catch (e) {
         errBox.textContent = "Не удалось связаться с сервером";
         errBox.style.display = "block";
+    } finally {
+        loginInFlight = false;
+        btn.disabled = false;
+        btn.textContent = oldText;
     }
 }
 
@@ -195,6 +208,11 @@ document.querySelectorAll(".nav-item[data-panel]").forEach(item => {
     });
 });
 
+/** Zagruzka paneli: oshibka ne dolzhna ostavlyat' "visyaschiy" ekran bez soobscheniya. */
+function safeLoad(fn) {
+    Promise.resolve().then(fn).catch(e => toast("Ошибка загрузки: " + e.message, true));
+}
+
 function switchPanel(name) {
     if (name === "businesses" && CURRENT_BUSINESS) {
         // vyhod iz rezhima prosmotra biznesa
@@ -205,29 +223,33 @@ function switchPanel(name) {
     document.querySelectorAll(".nav-item[data-panel]").forEach(i => i.classList.toggle("active", i.dataset.panel === name));
     document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
 
-    if (name === "pos") refreshShiftBanner();
-    if (name === "receipts") loadReceipts();
-    if (name === "shifts") loadShiftsPanel();
-    if (name === "expenses") loadExpensesPanel();
-    if (name === "stock-in") { loadProductSelect("inProductSelect"); loadMovements("IN"); }
-    if (name === "stock-out") { loadProductSelect("outProductSelect"); loadMovements("OUT"); }
-    if (name === "products") loadProductsTable();
-    if (name === "customers") loadCustomersTable();
-    if (name === "dashboard") loadDashboard();
-    if (name === "branches") loadBranches();
-    if (name === "cashiers") loadCashiers();
-    if (name === "businesses") loadBusinesses();
+    if (name === "pos") safeLoad(refreshShiftBanner);
+    if (name === "receipts") safeLoad(loadReceipts);
+    if (name === "shifts") safeLoad(loadShiftsPanel);
+    if (name === "expenses") safeLoad(loadExpensesPanel);
+    if (name === "stock-in") safeLoad(() => Promise.all([loadProductSelect("inProductSelect"), loadMovements("IN")]));
+    if (name === "stock-out") safeLoad(() => Promise.all([loadProductSelect("outProductSelect"), loadMovements("OUT")]));
+    if (name === "products") safeLoad(loadProductsTable);
+    if (name === "customers") safeLoad(loadCustomersTable);
+    if (name === "dashboard") safeLoad(loadDashboard);
+    if (name === "branches") safeLoad(loadBranches);
+    if (name === "cashiers") safeLoad(loadCashiers);
+    if (name === "businesses") safeLoad(loadBusinesses);
 }
 
 // ---------- POS ----------
 
-async function initPos() {
+/** Obnovlyaet spisok tovarov; kategorii berutsya iz samih tovarov (otdel'nyy zapros ne nuzhen). */
+async function refreshProducts() {
     allProducts = await api("/products");
-    const cats = await api("/products/categories");
-    categories = ["Все", ...Array.from(cats)];
+    categories = ["Все", ...new Set(allProducts.map(p => p.category).filter(Boolean))];
+    if (!categories.includes(activeCategory)) activeCategory = "Все";
     renderTabs();
     renderProductList();
-    refreshShiftBanner();
+}
+
+async function initPos() {
+    await Promise.all([refreshProducts(), refreshShiftBanner()]);
 }
 
 function renderTabs() {
@@ -245,7 +267,6 @@ function renderTabs() {
 function renderProductList() {
     const box = document.getElementById("posList");
     const q = document.getElementById("posSearch").value.trim().toLowerCase();
-    box.innerHTML = "";
 
     let list = allProducts;
     if (activeCategory !== "Все") list = list.filter(p => p.category === activeCategory);
@@ -256,24 +277,29 @@ function renderProductList() {
         return;
     }
 
-    list.forEach(p => {
+    // vse kartochki odnoy strokoy - bystree, chem sozdavat' elementy po odnomu
+    box.innerHTML = list.map(p => {
         const priceLabel = priceLabelFor(p);
         const sizesLabel = Object.keys(p.prices).filter(s => s !== "BASE").join(" · ");
-        const card = document.createElement("div");
-        card.className = "product-card";
-        card.innerHTML = `
+        return `<div class="product-card" data-id="${esc(p.id)}">
             <div class="product-thumb">📦</div>
             <div class="product-info">
-                <div class="product-name">${p.name}</div>
-                ${sizesLabel ? `<div class="product-sizes">${sizesLabel}</div>` : ""}
-                <div class="product-stock ${p.isLowStock ? "low" : ""}">Остаток: ${p.stockQty} ${p.unit}</div>
+                <div class="product-name">${esc(p.name)}</div>
+                ${sizesLabel ? `<div class="product-sizes">${esc(sizesLabel)}</div>` : ""}
+                <div class="product-stock ${p.isLowStock ? "low" : ""}">Остаток: ${p.stockQty} ${esc(p.unit)}</div>
             </div>
             <div class="product-price">${priceLabel}</div>
-        `;
-        card.onclick = () => addToCartFlow(p);
-        box.appendChild(card);
-    });
+        </div>`;
+    }).join("");
 }
+
+// odin obrabotchik na ves' spisok (vmesto obrabotchika na kazhduyu kartochku)
+document.getElementById("posList").addEventListener("click", (e) => {
+    const card = e.target.closest(".product-card");
+    if (!card) return;
+    const p = allProducts.find(x => x.id === card.dataset.id);
+    if (p) addToCartFlow(p);
+});
 
 function priceLabelFor(p) {
     const sizes = Object.keys(p.prices).filter(s => s !== "BASE");
@@ -322,7 +348,7 @@ function renderCart() {
         row.className = "cart-item";
         row.innerHTML = `
             <div>
-                <div>${item.productName} ${item.size ? "(" + item.size + ")" : ""}</div>
+                <div>${esc(item.productName)} ${item.size ? "(" + esc(item.size) + ")" : ""}</div>
                 <div style="color:var(--text-dim)">${money(item.price)}</div>
             </div>
             <div class="qty-controls">
@@ -342,7 +368,13 @@ function renderCart() {
 }
 
 document.getElementById("cartClearBtn").onclick = () => { cart = []; renderCart(); };
-document.getElementById("posSearch").addEventListener("input", renderProductList);
+
+// poisk: ne perestraivaem spisok na kazhduyu bukvu, a tol'ko kogda polzovatel' na sekundu ostanovilsya
+let searchDebounce;
+document.getElementById("posSearch").addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(renderProductList, 120);
+});
 
 // ---------- shift banner on POS ----------
 
@@ -357,7 +389,7 @@ async function refreshShiftBanner() {
         const s = currentShiftData.shift;
         banner.className = "shift-banner";
         banner.style.display = "flex";
-        banner.innerHTML = `<span>Смена открыта: <b>${s.cashierName}</b> · с ${fmtDateTime(s.openedAt)}</span>
+        banner.innerHTML = `<span>Смена открыта: <b>${esc(s.cashierName)}</b> · с ${fmtDateTime(s.openedAt)}</span>
             <a class="link-btn" onclick="switchPanel('shifts')">Управление сменой →</a>`;
     } else {
         banner.className = "shift-banner no-shift";
@@ -430,7 +462,11 @@ document.getElementById("payCustomerPhone").addEventListener("input", (e) => {
     }, 400);
 });
 
+// zaschita ot dvoynogo nazhatiya: pri medlennom internete kassir mog nazhat' "Oplatit'" dvazhdy i probit' chek dvazhdy
+let payInFlight = false;
+
 document.getElementById("payModalConfirm").onclick = async () => {
+    if (payInFlight) return;
     const total = cartTotal();
     const phoneInput = document.getElementById("payCustomerPhone").value.trim();
     const bonusInput = document.getElementById("bonusUseInput");
@@ -465,43 +501,61 @@ document.getElementById("payModalConfirm").onclick = async () => {
         bonusUsed
     };
 
+    const btn = document.getElementById("payModalConfirm");
+    const oldText = btn.textContent;
+    payInFlight = true;
+    btn.disabled = true;
+    btn.textContent = "Проводим…";
+
     try {
         const saved = await api("/orders", { method: "POST", body: JSON.stringify(order) });
         let msg = "Чек " + saved.id + " оплачен: " + money(saved.total);
         if (saved.bonusEarned > 0) msg += " · начислено бонусов: " + money(saved.bonusEarned);
         toast(msg);
+
+        // srazu pokazyvaem novye ostatki, ne zhdyom otveta servera
+        const sold = cart;
         cart = [];
         renderCart();
         closePayModal();
-        await initPos();
-        refreshShiftBanner();
+        sold.forEach(i => {
+            const p = allProducts.find(x => x.id === i.productId);
+            if (p) p.stockQty = Math.max(0, p.stockQty - i.quantity);
+        });
+        renderProductList();
+
+        // tochnye dannye podtyagivaem v fone
+        Promise.all([refreshProducts(), refreshShiftBanner()]).catch(() => {});
     } catch (e) {
         toast(e.message, true);
+    } finally {
+        payInFlight = false;
+        btn.disabled = false;
+        btn.textContent = oldText;
     }
 };
 
 // ---------- CHEKI ----------
 
 async function loadReceipts() {
-    const orders = await api("/orders");
+    const orders = await api("/orders"); // novye pervymi
     const body = document.getElementById("receiptsBody");
-    body.innerHTML = "";
     const methodLabel = { CASH: "Наличные", CARD: "Карта", MIXED: "Смешанная", DEBT: "Долг" };
-    [...orders].reverse().forEach(o => {
-        const tr = document.createElement("tr");
-        const time = fmtDateTime(o.createdAt);
-        tr.innerHTML = `<td>${o.id}</td><td>${time}</td><td>${o.cashierName || "—"}</td>
-            <td>${methodLabel[o.paymentMethod] || o.paymentMethod}</td>
-            <td>${o.customerPhone || "—"}</td><td>${money(o.total)}</td>`;
-        body.appendChild(tr);
-    });
+    body.innerHTML = orders.map(o => `<tr><td>${esc(o.id)}</td><td>${fmtDateTime(o.createdAt)}</td><td>${esc(o.cashierName) || "—"}</td>
+            <td>${methodLabel[o.paymentMethod] || esc(o.paymentMethod)}</td>
+            <td>${esc(o.customerPhone) || "—"}</td><td>${money(o.total)}</td></tr>`).join("");
 }
 
 // ---------- SMENY ----------
 
 async function loadShiftsPanel() {
-    await loadCashierSelect();
-    currentShiftData = await api("/shifts/current");
+    // vse zaprosy srazu, а ne po ocheredi
+    const [, cur, history] = await Promise.all([
+        loadCashierSelect(),
+        api("/shifts/current"),
+        api("/shifts/history")
+    ]);
+    currentShiftData = cur;
 
     if (currentShiftData.open) {
         document.getElementById("shiftClosedView").style.display = "none";
@@ -525,20 +579,28 @@ async function loadShiftsPanel() {
             } else {
                 noteBox.style.display = "block";
                 noteBox.innerHTML = `📌 Подсказка от администратора: оставлено <b>${money(note.amount)}</b>.
-                    ${note.comment ? "«" + note.comment + "»" : ""}`;
+                    ${note.comment ? "«" + esc(note.comment) + "»" : ""}`;
                 document.getElementById("shiftOpenAmount").value = note.amount;
                 document.getElementById("shiftOpenComment").value = note.comment || "";
             }
         } catch (e) { noteBox.style.display = "none"; }
     }
 
-    await loadShiftHistory();
+    renderShiftCards(document.getElementById("shiftHistoryGrid"), history.map(s => ({ shift: s })), true);
 }
 
 async function loadCashierSelect() {
-    const cashiers = await api("/cashiers");
     const sel = document.getElementById("shiftOpenCashier");
     sel.innerHTML = "";
+    // Spisok kassirov dostupen tol'ko adminu; kassir otkryvaet smenu na sebya.
+    if (CURRENT_ROLE === "CASHIER") {
+        const opt = document.createElement("option");
+        opt.value = CASHIER_NAME;
+        opt.textContent = CASHIER_NAME;
+        sel.appendChild(opt);
+        return;
+    }
+    const cashiers = await api("/cashiers");
     cashiers.forEach(c => {
         const opt = document.createElement("option");
         opt.value = c.name;
@@ -582,12 +644,6 @@ document.getElementById("shiftCloseBtn").onclick = async () => {
     } catch (e) { toast(e.message, true); }
 };
 
-async function loadShiftHistory() {
-    const history = await api("/shifts/history");
-    const grid = document.getElementById("shiftHistoryGrid");
-    renderShiftCards(grid, history.map(s => ({ shift: s })), true);
-}
-
 function renderShiftCards(container, list, showDiscrepancy) {
     container.innerHTML = "";
     if (list.length === 0) {
@@ -610,10 +666,10 @@ function renderShiftCards(container, list, showDiscrepancy) {
         }
         div.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div class="cashier">${s.cashierName}</div>
+                <div class="cashier">${esc(s.cashierName)}</div>
                 <span class="status-pill ${s.status === "OPEN" ? "open" : "closed"}">${s.status === "OPEN" ? "открыта" : "закрыта"}</span>
             </div>
-            <div class="meta">${s.branchName || ""} · ${period}</div>
+            <div class="meta">${esc(s.branchName) || ""} · ${period}</div>
             <div class="row"><span>Наличные</span><b>${typeof cash === "number" ? money(cash) : cash}</b></div>
             <div class="row"><span>Карта</span><b>${typeof card === "number" ? money(card) : card}</b></div>
             <div class="foot"><span>${receipts} чек.</span>${discHtml}</div>
@@ -625,14 +681,9 @@ function renderShiftCards(container, list, showDiscrepancy) {
 // ---------- RASHODY (kassa) ----------
 
 async function loadExpensesPanel() {
-    const list = await api("/expenses");
+    const list = await api("/expenses"); // novye pervymi
     const body = document.getElementById("expHistoryBody");
-    body.innerHTML = "";
-    [...list].reverse().forEach(e => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${fmtDateTime(e.createdAt)}</td><td>${money(e.amount)}</td><td>${e.comment || "—"}</td><td>${e.cashierName || "—"}</td>`;
-        body.appendChild(tr);
-    });
+    body.innerHTML = list.map(e => `<tr><td>${fmtDateTime(e.createdAt)}</td><td>${money(e.amount)}</td><td>${esc(e.comment) || "—"}</td><td>${esc(e.cashierName) || "—"}</td></tr>`).join("");
 }
 
 document.getElementById("expSubmit").onclick = async () => {
@@ -664,16 +715,11 @@ async function loadProductSelect(selectId) {
 }
 
 async function loadMovements(type) {
-    const movements = await api("/inventory/movements");
-    const filtered = movements.filter(m => m.type === type).reverse();
+    const movements = await api("/inventory/movements"); // novye pervymi
+    const filtered = movements.filter(m => m.type === type);
     const bodyId = type === "IN" ? "inHistoryBody" : "outHistoryBody";
     const body = document.getElementById(bodyId);
-    body.innerHTML = "";
-    filtered.forEach(m => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${fmtDateTime(m.createdAt)}</td><td>${m.productName}</td><td>${m.quantity}</td><td>${m.comment || "—"}</td>`;
-        body.appendChild(tr);
-    });
+    body.innerHTML = filtered.map(m => `<tr><td>${fmtDateTime(m.createdAt)}</td><td>${esc(m.productName)}</td><td>${m.quantity}</td><td>${esc(m.comment) || "—"}</td></tr>`).join("");
 }
 
 async function submitMovement(type) {
@@ -691,8 +737,7 @@ async function submitMovement(type) {
         document.getElementById(prefix + "Comment").value = "";
         document.getElementById(prefix + "Qty").value = 1;
         allProducts = await api("/products");
-        await loadProductSelect(prefix + "ProductSelect");
-        await loadMovements(type);
+        await Promise.all([loadProductSelect(prefix + "ProductSelect"), loadMovements(type)]);
     } catch (e) {
         toast(e.message, true);
     }
@@ -710,11 +755,11 @@ async function loadProductsTable() {
     allProducts.forEach(p => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-            <td>${p.name}</td>
-            <td>${p.category}</td>
+            <td>${esc(p.name)}</td>
+            <td>${esc(p.category)}</td>
             <td>${priceLabelFor(p)}</td>
-            <td style="${p.isLowStock ? "color:var(--danger)" : ""}">${p.stockQty} ${p.unit}</td>
-            <td><button class="btn danger" data-id="${p.id}">Удалить</button></td>
+            <td style="${p.isLowStock ? "color:var(--danger)" : ""}">${p.stockQty} ${esc(p.unit)}</td>
+            <td><button class="btn danger" data-id="${esc(p.id)}">Удалить</button></td>
         `;
         tr.querySelector("button").onclick = async () => {
             if (!confirm("Удалить товар «" + p.name + "»?")) return;
@@ -744,24 +789,15 @@ document.getElementById("addProductBtn").onclick = async () => {
 // ---------- KLIENTY ----------
 
 async function loadCustomersTable() {
-    const orders = await api("/orders");
-    const phones = [...new Set(orders.map(o => o.customerPhone).filter(Boolean))];
+    const customers = await api("/customers"); // odin zapros vmesto zaprosa na kazhdogo klienta
     const body = document.getElementById("customersBody");
-    body.innerHTML = "";
-    if (phones.length === 0) {
+    if (customers.length === 0) {
         body.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim)">Пока нет клиентов с бонусным счётом</td></tr>';
         return;
     }
-    for (const phone of phones) {
-        try {
-            const c = await api("/customers/" + encodeURIComponent(phone));
-            const tr = document.createElement("tr");
-            tr.innerHTML = `<td>${c.phone}</td><td>${money(c.balance)}</td>
+    body.innerHTML = customers.map(c => `<tr><td>${esc(c.phone)}</td><td>${money(c.balance)}</td>
                 <td style="${c.debtBalance > 0 ? "color:var(--danger); font-weight:700;" : ""}">${money(c.debtBalance)}</td>
-                <td>${money(c.totalSpent)}</td>`;
-            body.appendChild(tr);
-        } catch (e) {}
-    }
+                <td>${money(c.totalSpent)}</td></tr>`).join("");
 }
 
 // ---------- DASHBOARD ----------
@@ -770,19 +806,24 @@ document.querySelectorAll(".period-tab").forEach(tab => {
     tab.addEventListener("click", () => {
         dashboardPeriod = tab.dataset.period;
         document.querySelectorAll(".period-tab").forEach(t => t.classList.toggle("active", t === tab));
-        loadDashboard();
+        safeLoad(loadDashboard);
     });
 });
 document.querySelectorAll(".payment-tab").forEach(tab => {
     tab.addEventListener("click", () => {
         dashboardPayMethod = tab.dataset.method;
         document.querySelectorAll(".payment-tab").forEach(t => t.classList.toggle("active", t === tab));
-        loadPaymentBreakdown();
+        renderPaymentBreakdown(); // dannye uzhe est' - zapros ne nuzhen
     });
 });
 
 async function loadDashboard() {
-    const s = await api("/dashboard/summary?period=" + dashboardPeriod);
+    const [s, openShifts, history] = await Promise.all([
+        api("/dashboard/summary?period=" + dashboardPeriod),
+        api("/dashboard/open-shifts"),
+        api("/dashboard/shift-history")
+    ]);
+
     document.getElementById("statOpenShifts").textContent = s.openShiftsCount;
     document.getElementById("statRevenue").textContent = money(s.revenueTotal);
     document.getElementById("statCash").textContent = money(s.cashTotal);
@@ -793,25 +834,18 @@ async function loadDashboard() {
     else { badge.style.display = "none"; }
 
     const lowBody = document.getElementById("lowStockBody");
-    lowBody.innerHTML = "";
-    s.lowStockProducts.forEach(p => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${p.name}</td><td style="color:var(--danger)">${p.stockQty}</td><td>${p.minStockQty}</td>`;
-        lowBody.appendChild(tr);
-    });
+    lowBody.innerHTML = s.lowStockProducts.map(p => `<tr><td>${esc(p.name)}</td><td style="color:var(--danger)">${p.stockQty}</td><td>${p.minStockQty}</td></tr>`).join("");
 
-    await loadPaymentBreakdown();
+    dashboardBreakdown = s.breakdown;
+    renderPaymentBreakdown();
 
-    const openShifts = await api("/dashboard/open-shifts");
     renderShiftCards(document.getElementById("openShiftsGrid"), openShifts, false);
-
-    const history = await api("/dashboard/shift-history");
     renderShiftCards(document.getElementById("dashShiftHistoryGrid"), history, true);
 }
 
-async function loadPaymentBreakdown() {
-    const b = await api("/dashboard/payment-breakdown?period=" + dashboardPeriod);
-    const data = b[dashboardPayMethod] || b.all;
+function renderPaymentBreakdown() {
+    if (!dashboardBreakdown) return;
+    const data = dashboardBreakdown[dashboardPayMethod] || dashboardBreakdown.all;
     document.getElementById("paymentSummaryLine").textContent = `${data.count} чек. · ${money(data.total)}`;
 }
 

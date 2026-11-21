@@ -5,6 +5,8 @@ import com.haki.pos.service.DataStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collection;
+
 @RestController
 @RequestMapping("/api/customers")
 @CrossOrigin(origins = "*")
@@ -14,6 +16,12 @@ public class CustomerController {
 
     public CustomerController(DataStore store) {
         this.store = store;
+    }
+
+    /** Vse klienty biznesa odnim zaprosom (dlya tablicy "Klienty"). */
+    @GetMapping
+    public Collection<Customer> list() {
+        return store.allCustomers();
     }
 
     /** Poisk klienta po telefonu; esli net - vozvraschaet balance=0 (klient budet sozdan pri pervoy pokupke). */

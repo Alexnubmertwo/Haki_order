@@ -32,19 +32,17 @@ public class ShiftController {
     }
 
     private Map<String, Object> withLiveTotals(Shift s) {
-        int cashRevenue = store.cashRevenueForShift(s.getId());
-        int cardRevenue = store.cardRevenueForShift(s.getId());
+        DataStore.ShiftTotals t = store.totalsForShift(s.getId());
         int expensesTotal = store.expensesTotalForShift(s.getId());
-        int expectedCashNow = s.getOpeningCash() + cashRevenue - expensesTotal;
-        int receiptsCount = store.ordersForShift(s.getId()).size();
+        int expectedCashNow = s.getOpeningCash() + t.cash() - expensesTotal;
         return Map.of(
                 "open", true,
                 "shift", s,
-                "cashRevenue", cashRevenue,
-                "cardRevenue", cardRevenue,
+                "cashRevenue", t.cash(),
+                "cardRevenue", t.card(),
                 "expensesTotal", expensesTotal,
                 "expectedCashNow", expectedCashNow,
-                "receiptsCount", receiptsCount
+                "receiptsCount", t.count()
         );
     }
 

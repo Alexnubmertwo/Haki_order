@@ -20,10 +20,17 @@ import java.util.*;
  * Hranilische dannyh Haki v Supabase (PostgreSQL) cherez JDBC.
  * Mnogo biznesov: kazhdyy zapros rabotaet tol'ko s dannymi svoego biznesa (business_id iz tokena).
  * Schema: haki-supabase-v2.sql
+ *
+ * Skorost': baza daleko ot servera, kazhdyy zapros ~70-100 ms, poetomu zapros'ov nuzhno kak mozhno men'she:
+ * summy gruppiruyutsya v SQL, zapisi pachkami (batch), spiski ogranicheny.
  */
 @Service
 @Transactional
 public class DataStore {
+
+    private static final int RECEIPTS_LIMIT = 300;
+    private static final int LIST_LIMIT = 300;
+    private static final int SHIFTS_LIMIT = 100;
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -186,10 +193,12 @@ public class DataStore {
                 .stream().findFirst();
     }
 
+    /** Odin zapros: sozdayot klienta, esli net, i srazu vozvraschaet ego. */
     public Customer findOrCreateCustomer(String phone) {
         String p = phone.trim();
-        jdbc.update("insert into customers(business_id,phone) values (?,?) on conflict (business_id, phone) do nothing", bid(), p);
-        return findCustomer(p).orElseThrow();
+        return jdbc.query("insert into customers(business_id,phone) values (?,?) "
+                        + "on conflict (business_id, phone) do update set phone = excluded.phone returning *",
+                customerMapper, bid(), p).get(0);
     }
 
     @Transactional(readOnly = true)
@@ -215,6 +224,7 @@ public class DataStore {
     /**
      * Provodit prodaju v odnoy tranzakcii: spisyvaet sklad, privyazyvaet k tekuschey smene,
      * primenyaet i nachislyaet bonusy klienta. Pri oshibke vsyo otkatyvaetsya.
+     * Pozicii, spisanie i dvizheniya zapisyvayutsya pachkami, a ne po odnoy.
      */
     public CheckoutResult checkout(Order order) {
         CheckoutResult result = new CheckoutResult();
@@ -262,18 +272,42 @@ public class DataStore {
                 order.getCashAmount(), order.getCardAmount(), order.getDebtAmount(),
                 order.getBonusUsed(), order.getBonusEarned(), ts(order.getCreatedAt()));
 
-        for (Order.Item item : order.getItems()) {
-            jdbc.update("insert into order_items(order_id,product_id,product_name,size_label,price,quantity) values (?,?,?,?,?,?)",
-                    order.getId(), item.getProductId(), item.getProductName(), item.getSize(),
-                    item.getPrice(), item.getQuantity());
+        if (!order.getItems().isEmpty()) {
+            // 1) pozicii cheka - odnoy pachkoy
+            List<Object[]> itemRows = new ArrayList<>();
+            for (Order.Item item : order.getItems()) {
+                itemRows.add(new Object[]{order.getId(), item.getProductId(), item.getProductName(), item.getSize(),
+                        item.getPrice(), item.getQuantity()});
+            }
+            jdbc.batchUpdate("insert into order_items(order_id,product_id,product_name,size_label,price,quantity) values (?,?,?,?,?,?)",
+                    itemRows);
 
-            // spisanie so sklada (ne uhodim v minus)
-            Optional<Product> p = findProduct(item.getProductId());
-            if (p.isPresent()) {
-                jdbc.update("update products set stock_qty = greatest(0, stock_qty - ?) where id = ? and business_id = ?",
-                        item.getQuantity(), item.getProductId(), bid());
-                recordMovement(p.get(), InventoryMovement.Type.OUT, item.getQuantity(),
-                        "Продажа " + order.getId(), order.getCashierName());
+            // 2) kakie tovary sushchestvuyut - odnim zaprosom
+            List<String> ids = order.getItems().stream().map(Order.Item::getProductId).distinct().toList();
+            String in = String.join(",", Collections.nCopies(ids.size(), "?"));
+            List<Object> args = new ArrayList<>();
+            args.add(bid());
+            args.addAll(ids);
+            Map<String, String> names = new HashMap<>();
+            jdbc.query("select id, name from products where business_id = ? and id in (" + in + ")",
+                    rs -> { names.put(rs.getString("id"), rs.getString("name")); },
+                    args.toArray());
+
+            // 3) spisanie so sklada (ne uhodim v minus) i dvizheniya - dvumya pachkami
+            List<Object[]> stockRows = new ArrayList<>();
+            List<Object[]> movRows = new ArrayList<>();
+            Timestamp now = ts(LocalDateTime.now());
+            for (Order.Item item : order.getItems()) {
+                String name = names.get(item.getProductId());
+                if (name == null) continue;
+                stockRows.add(new Object[]{item.getQuantity(), item.getProductId(), bid()});
+                movRows.add(new Object[]{newId("MOV"), bid(), item.getProductId(), name, "OUT", item.getQuantity(),
+                        "Продажа " + order.getId(), order.getCashierName(), now});
+            }
+            if (!stockRows.isEmpty()) {
+                jdbc.batchUpdate("update products set stock_qty = greatest(0, stock_qty - ?) where id = ? and business_id = ?", stockRows);
+                jdbc.batchUpdate("insert into inventory_movements(id,business_id,product_id,product_name,type,quantity,comment,cashier_name,created_at) values (?,?,?,?,?,?,?,?,?)",
+                        movRows);
             }
         }
 
@@ -290,11 +324,12 @@ public class DataStore {
         return result;
     }
 
-    private List<Order> loadOrders(String extraWhere, Object... extraArgs) {
+    private List<Order> loadOrders(String extraWhere, int limit, Object... extraArgs) {
         List<Object> args = new ArrayList<>();
         args.add(bid());
         args.addAll(Arrays.asList(extraArgs));
-        List<Order> orders = jdbc.query("select * from orders where business_id = ? " + extraWhere + " order by created_at desc", (rs, i) -> {
+        String lim = limit > 0 ? " limit " + limit : "";
+        List<Order> orders = jdbc.query("select * from orders where business_id = ? " + extraWhere + " order by created_at desc" + lim, (rs, i) -> {
             Order o = new Order();
             o.setId(rs.getString("id"));
             o.setShiftId(rs.getString("shift_id"));
@@ -328,12 +363,13 @@ public class DataStore {
         return orders;
     }
 
+    /** Poslednie cheki (noveyshie pervymi). */
     @Transactional(readOnly = true)
-    public List<Order> allOrders() { return loadOrders(""); }
+    public List<Order> allOrders() { return loadOrders("", RECEIPTS_LIMIT); }
 
     @Transactional(readOnly = true)
     public List<Order> ordersForShift(String shiftId) {
-        return loadOrders("and shift_id = ?", shiftId);
+        return loadOrders("and shift_id = ?", 0, shiftId);
     }
 
     @Transactional(readOnly = true)
@@ -341,7 +377,48 @@ public class DataStore {
 
     @Transactional(readOnly = true)
     public List<Order> ordersSince(LocalDate since) {
-        return loadOrders("and created_at >= ?", ts(since.atStartOfDay()));
+        return loadOrders("and created_at >= ?", 0, ts(since.atStartOfDay()));
+    }
+
+    // ---------- Itogi (summy schitaet baza, a ne Java) ----------
+
+    public record ShiftTotals(int cash, int card, int count) {}
+
+    /** Nal, karta i kolichestvo chekov odnoy smeny - odin zapros. */
+    @Transactional(readOnly = true)
+    public ShiftTotals totalsForShift(String shiftId) {
+        return jdbc.queryForObject(
+                "select coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0), count(*) from orders where business_id = ? and shift_id = ?",
+                (rs, i) -> new ShiftTotals(rs.getInt(1), rs.getInt(2), rs.getInt(3)), bid(), shiftId);
+    }
+
+    /** Itogi vseh smen biznesa srazu - odin zapros vmesto neskol'kih na kazhduyu smenu. */
+    @Transactional(readOnly = true)
+    public Map<String, ShiftTotals> totalsByShift() {
+        Map<String, ShiftTotals> m = new HashMap<>();
+        jdbc.query("select shift_id, coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0), count(*) "
+                        + "from orders where business_id = ? and shift_id is not null group by shift_id",
+                rs -> { m.put(rs.getString(1), new ShiftTotals(rs.getInt(2), rs.getInt(3), rs.getInt(4))); },
+                bid());
+        return m;
+    }
+
+    /** byMethod: sposob oplaty -> {kolichestvo chekov, summa chekov}. */
+    public record PeriodStats(int count, int total, int cash, int card, Map<String, int[]> byMethod) {}
+
+    @Transactional(readOnly = true)
+    public PeriodStats statsSince(LocalDate since) {
+        int[] t = new int[4]; // count, total, cash, card
+        Map<String, int[]> by = new HashMap<>();
+        jdbc.query("select payment_method, count(*), coalesce(sum(total),0), coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0) "
+                        + "from orders where business_id = ? and created_at >= ? group by payment_method",
+                rs -> {
+                    int c = rs.getInt(2), tot = rs.getInt(3), cash = rs.getInt(4), card = rs.getInt(5);
+                    by.put(rs.getString(1), new int[]{c, tot});
+                    t[0] += c; t[1] += tot; t[2] += cash; t[3] += card;
+                },
+                bid(), ts(since.atStartOfDay()));
+        return new PeriodStats(t[0], t[1], t[2], t[3], by);
     }
 
     // ---------- Inventory movements (tovarnyy prihod/rashod, ne kassa) ----------
@@ -368,9 +445,10 @@ public class DataStore {
         return recordMovement(p, type, qty, comment, cashierName);
     }
 
+    /** Poslednie dvizheniya (noveyshie pervymi). */
     @Transactional(readOnly = true)
     public List<InventoryMovement> allMovements() {
-        return jdbc.query("select * from inventory_movements where business_id = ? order by created_at desc", (rs, i) -> {
+        return jdbc.query("select * from inventory_movements where business_id = ? order by created_at desc limit " + LIST_LIMIT, (rs, i) -> {
             InventoryMovement m = new InventoryMovement(rs.getString("id"), rs.getString("product_id"),
                     rs.getString("product_name"), InventoryMovement.Type.valueOf(rs.getString("type")),
                     rs.getInt("quantity"), rs.getString("comment"), rs.getString("cashier_name"));
@@ -396,9 +474,10 @@ public class DataStore {
         return e;
     }
 
+    /** Poslednie rashody (noveyshie pervymi). */
     @Transactional(readOnly = true)
     public List<CashExpense> allExpenses() {
-        return jdbc.query("select * from cash_expenses where business_id = ? order by created_at desc", expenseMapper, bid());
+        return jdbc.query("select * from cash_expenses where business_id = ? order by created_at desc limit " + LIST_LIMIT, expenseMapper, bid());
     }
 
     @Transactional(readOnly = true)
@@ -486,9 +565,10 @@ public class DataStore {
         return s;
     }
 
+    /** Poslednie smeny (noveyshie pervymi). */
     @Transactional(readOnly = true)
     public List<Shift> shiftHistory() {
-        return jdbc.query("select * from shifts where business_id = ? order by opened_at desc", shiftMapper, bid());
+        return jdbc.query("select * from shifts where business_id = ? order by opened_at desc limit " + SHIFTS_LIMIT, shiftMapper, bid());
     }
 
     // ---------- Admin cash note (podskazka summy dlya sleduyuschey smeny) ----------

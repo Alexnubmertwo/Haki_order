@@ -1,6 +1,5 @@
 package com.haki.pos.controller;
 
-import com.haki.pos.model.Order;
 import com.haki.pos.model.Product;
 import com.haki.pos.model.Shift;
 import com.haki.pos.service.DataStore;
@@ -21,81 +20,78 @@ public class DashboardController {
         this.store = store;
     }
 
-    /** period: today | 7d | 30d */
-    @GetMapping("/summary")
-    public Map<String, Object> summary(@RequestParam(defaultValue = "today") String period) {
-        LocalDate since = switch (period) {
+    private static LocalDate sinceFor(String period) {
+        return switch (period) {
             case "7d" -> LocalDate.now().minusDays(6);
             case "30d" -> LocalDate.now().minusDays(29);
             default -> LocalDate.now();
         };
-        List<Order> periodOrders = store.ordersSince(since);
+    }
 
-        int cashTotal = periodOrders.stream().mapToInt(Order::getCashAmount).sum();
-        int cardTotal = periodOrders.stream().mapToInt(Order::getCardAmount).sum();
-        int revenueTotal = cashTotal + cardTotal;
+    private static Map<String, Object> method(DataStore.PeriodStats st, String m) {
+        int[] v = st.byMethod().getOrDefault(m, new int[]{0, 0});
+        return Map.of("count", v[0], "total", v[1]);
+    }
 
+    private static Map<String, Object> breakdown(DataStore.PeriodStats st) {
+        return Map.of(
+                "all", Map.of("count", st.count(), "total", st.total()),
+                "cash", method(st, "CASH"),
+                "card", method(st, "CARD"),
+                "mixed", method(st, "MIXED")
+        );
+    }
+
+    /** period: today | 7d | 30d. Vklyuchaet "breakdown" - razbivku po sposobam oplaty. */
+    @GetMapping("/summary")
+    public Map<String, Object> summary(@RequestParam(defaultValue = "today") String period) {
+        DataStore.PeriodStats st = store.statsSince(sinceFor(period));
+        List<Product> all = List.copyOf(store.allProducts());
+        List<Product> lowStock = all.stream().filter(Product::isLowStock).toList();
         long openShiftsCount = store.currentShift().isPresent() ? 1 : 0;
-
-        List<Product> lowStock = store.allProducts().stream().filter(Product::isLowStock).toList();
 
         return Map.of(
                 "period", period,
-                "receiptsCount", periodOrders.size(),
-                "revenueTotal", revenueTotal,
-                "cashTotal", cashTotal,
-                "cardTotal", cardTotal,
+                "receiptsCount", st.count(),
+                "revenueTotal", st.cash() + st.card(),
+                "cashTotal", st.cash(),
+                "cardTotal", st.card(),
                 "openShiftsCount", openShiftsCount,
-                "totalProducts", store.allProducts().size(),
+                "totalProducts", all.size(),
                 "lowStockCount", lowStock.size(),
-                "lowStockProducts", lowStock
+                "lowStockProducts", lowStock,
+                "breakdown", breakdown(st)
         );
     }
 
-    /** Razbivka chekov po sposobu oplaty za period - dlya vkladok "Kassa" na dashborde. */
+    /** Razbivka chekov po sposobu oplaty za period. */
     @GetMapping("/payment-breakdown")
     public Map<String, Object> paymentBreakdown(@RequestParam(defaultValue = "today") String period) {
-        LocalDate since = switch (period) {
-            case "7d" -> LocalDate.now().minusDays(6);
-            case "30d" -> LocalDate.now().minusDays(29);
-            default -> LocalDate.now();
-        };
-        List<Order> periodOrders = store.ordersSince(since);
-
-        return Map.of(
-                "all", Map.of("count", periodOrders.size(),
-                        "total", periodOrders.stream().mapToInt(Order::getTotal).sum()),
-                "cash", summarize(periodOrders, "CASH"),
-                "card", summarize(periodOrders, "CARD"),
-                "mixed", summarize(periodOrders, "MIXED")
-        );
-    }
-
-    private Map<String, Object> summarize(List<Order> orders, String method) {
-        List<Order> filtered = orders.stream().filter(o -> method.equals(o.getPaymentMethod())).toList();
-        return Map.of("count", filtered.size(), "total", filtered.stream().mapToInt(Order::getTotal).sum());
+        return breakdown(store.statsSince(sinceFor(period)));
     }
 
     @GetMapping("/open-shifts")
     public List<Object> openShifts() {
-        return store.currentShift().<List<Object>>map(s -> List.of((Object) shiftSummary(s))).orElse(List.of());
+        return store.currentShift()
+                .<List<Object>>map(s -> List.of((Object) shiftSummary(s, store.totalsForShift(s.getId()))))
+                .orElse(List.of());
     }
 
     @GetMapping("/shift-history")
     public List<Map<String, Object>> shiftHistory() {
-        return store.shiftHistory().stream().map(this::shiftSummary).toList();
+        List<Shift> shifts = store.shiftHistory();
+        Map<String, DataStore.ShiftTotals> totals = store.totalsByShift();
+        DataStore.ShiftTotals zero = new DataStore.ShiftTotals(0, 0, 0);
+        return shifts.stream().map(s -> shiftSummary(s, totals.getOrDefault(s.getId(), zero))).toList();
     }
 
-    private Map<String, Object> shiftSummary(Shift s) {
-        int cashRevenue = store.cashRevenueForShift(s.getId());
-        int cardRevenue = store.cardRevenueForShift(s.getId());
-        int receiptsCount = store.ordersForShift(s.getId()).size();
+    private Map<String, Object> shiftSummary(Shift s, DataStore.ShiftTotals t) {
         return Map.of(
                 "shift", s,
-                "cashRevenue", cashRevenue,
-                "cardRevenue", cardRevenue,
-                "revenueTotal", cashRevenue + cardRevenue,
-                "receiptsCount", receiptsCount
+                "cashRevenue", t.cash(),
+                "cardRevenue", t.card(),
+                "revenueTotal", t.cash() + t.card(),
+                "receiptsCount", t.count()
         );
     }
 }

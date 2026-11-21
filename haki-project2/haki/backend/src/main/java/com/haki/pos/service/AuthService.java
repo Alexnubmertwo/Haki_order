@@ -28,10 +28,22 @@ public class AuthService {
     private static final int MAX_FAILS = 5;
     private static final long LOCK_MS = 5 * 60 * 1000L;
 
+    /**
+     * Kesh proverok na 15 sekund: kazhdyy zapros ne hodit v bazu za tokenom i statusom biznesa.
+     * Otklyuchenie polzovatelya/biznesa vstupaet v silu v techenie 15 sekund.
+     */
+    private static final long CACHE_MS = 15_000L;
+    private static final int CACHE_MAX = 5000;
+
+    private record Cached<T>(T value, long until) {}
+
     private final JdbcTemplate jdbc;
     private final PasswordEncoder encoder;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, long[]> fails = new ConcurrentHashMap<>(); // login -> {kol-vo oshibok, zablokirovan do (ms)}
+    private final Map<String, Cached<AuthUser>> sessionCache = new ConcurrentHashMap<>();
+    private final Map<String, Cached<Boolean>> bizActiveCache = new ConcurrentHashMap<>();
+    private final Map<String, Cached<Boolean>> bizExistsCache = new ConcurrentHashMap<>();
 
     @Value("${haki.superadmin.user:}")
     private String superUser;
@@ -116,27 +128,58 @@ public class AuthService {
 
     public AuthUser validate(String token) {
         if (token == null || token.isBlank()) return null;
+        String h = sha256(token);
+        long now = System.currentTimeMillis();
+
+        Cached<AuthUser> c = sessionCache.get(h);
+        if (c != null && c.until() > now) return c.value();
+
         List<AuthUser> list = jdbc.query(
                 "select u.id, u.name, u.role, u.business_id from sessions s join users u on u.id = s.user_id "
                         + "where s.token_hash = ? and s.expires_at > now() and u.active",
                 (rs, i) -> new AuthUser(rs.getString("id"), rs.getString("name"), rs.getString("role"), rs.getString("business_id")),
-                sha256(token));
-        return list.isEmpty() ? null : list.get(0);
+                h);
+        if (list.isEmpty()) {
+            sessionCache.remove(h);
+            return null;
+        }
+        if (sessionCache.size() > CACHE_MAX) sessionCache.clear();
+        sessionCache.put(h, new Cached<>(list.get(0), now + CACHE_MS));
+        return list.get(0);
     }
 
     public void logout(String token) {
-        if (token != null) jdbc.update("delete from sessions where token_hash = ?", sha256(token));
+        if (token == null) return;
+        String h = sha256(token);
+        sessionCache.remove(h);
+        jdbc.update("delete from sessions where token_hash = ?", h);
     }
 
     public boolean businessExists(String id) {
+        if (id == null) return false;
+        long now = System.currentTimeMillis();
+        Cached<Boolean> c = bizExistsCache.get(id);
+        if (c != null && c.until() > now) return c.value();
         Integer n = jdbc.queryForObject("select count(*) from businesses where id = ?", Integer.class, id);
-        return n != null && n > 0;
+        boolean exists = n != null && n > 0;
+        if (exists) {
+            // otritsatel'nyy rezul'tat ne keshiruem: tol'ko chto sozdannyy biznes dolzhen srazu stat' vidimym
+            if (bizExistsCache.size() > CACHE_MAX) bizExistsCache.clear();
+            bizExistsCache.put(id, new Cached<>(true, now + CACHE_MS));
+        }
+        return exists;
     }
 
     public boolean businessActive(String id) {
         if (id == null) return false;
+        long now = System.currentTimeMillis();
+        Cached<Boolean> c = bizActiveCache.get(id);
+        if (c != null && c.until() > now) return c.value();
         Integer n = jdbc.queryForObject("select count(*) from businesses where id = ? and active", Integer.class, id);
-        return n != null && n > 0;
+        boolean active = n != null && n > 0;
+        if (bizActiveCache.size() > CACHE_MAX) bizActiveCache.clear();
+        bizActiveCache.put(id, new Cached<>(active, now + CACHE_MS));
+        return active;
     }
 
     static String sha256(String s) {
