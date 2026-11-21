@@ -1,0 +1,51 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Адрес сервера (https://haki-xxxx.onrender.com). Можно оставить пустым: приложение спросит при первом запуске"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "haki-project2/haki/android/**"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build debug APK
+        working-directory: haki-project2/haki/android
+        run: gradle assembleDebug -PhakiUrl="${{ github.event.inputs.server_url }}"
+
+      - name: Rename APK
+        run: cp haki-project2/haki/android/app/build/outputs/apk/debug/app-debug.apk Haki-POS.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Haki-POS-apk
+          path: Haki-POS.apk
+
+      - name: Publish to Releases (stable download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-latest
+          name: Haki POS (Android)
+          body: "Последняя сборка приложения. Скачайте Haki-POS.apk на телефон и установите."
+          files: Haki-POS.apk
