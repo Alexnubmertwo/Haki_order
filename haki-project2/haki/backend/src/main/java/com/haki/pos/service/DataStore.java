@@ -130,6 +130,107 @@ public class DataStore {
         return new LinkedHashSet<>(jdbc.queryForList("select distinct category from products where business_id = ? order by category", String.class, bid()));
     }
 
+    // ---------- Categories ----------
+
+    /** V etu kategoriyu popadayut tovary, kotorye ubrali iz drugoy kategorii ili esli kategoriyu udalili. */
+    public static final String FALLBACK_CATEGORY = "Остальные";
+
+    public record CategoryInfo(String name, int products) {}
+
+    private static String placeholders(int n) {
+        return String.join(",", Collections.nCopies(n, "?"));
+    }
+
+    /** Kategorii iz otdel'noy tablicy + te, chto est' u tovarov, srazu s kolichestvom tovarov. */
+    @Transactional(readOnly = true)
+    public List<CategoryInfo> categoriesWithCounts() {
+        return jdbc.query("""
+                select n.name, (select count(*) from products p where p.business_id = ? and p.category = n.name) as cnt
+                from (select name from categories where business_id = ?
+                      union
+                      select category from products where business_id = ? and category is not null) n
+                order by n.name""",
+                (rs, i) -> new CategoryInfo(rs.getString(1), rs.getInt(2)),
+                bid(), bid(), bid());
+    }
+
+    public void createCategory(String name) {
+        jdbc.update("insert into categories(business_id,name) values (?,?) on conflict do nothing", bid(), name);
+    }
+
+    /**
+     * Zadayot sostav kategorii: vybrannye tovary popadayut v nee, a tovary, kotorye v nej byli, no ne vybrany,
+     * uhodyat v "Ostal'nye". Kategoriya sozdayotsya, esli ee eshche net.
+     */
+    public void setCategoryProducts(String name, List<String> productIds) {
+        createCategory(name);
+        List<String> ids = productIds == null ? List.of()
+                : productIds.stream().filter(Objects::nonNull).distinct().toList();
+
+        if (!FALLBACK_CATEGORY.equals(name)) {
+            List<Object> a = new ArrayList<>();
+            a.add(FALLBACK_CATEGORY);
+            a.add(bid());
+            a.add(name);
+            if (ids.isEmpty()) {
+                jdbc.update("update products set category = ? where business_id = ? and category = ?", a.toArray());
+            } else {
+                a.addAll(ids);
+                jdbc.update("update products set category = ? where business_id = ? and category = ? and id not in ("
+                        + placeholders(ids.size()) + ")", a.toArray());
+            }
+        }
+        if (!ids.isEmpty()) {
+            List<Object> a = new ArrayList<>();
+            a.add(name);
+            a.add(bid());
+            a.addAll(ids);
+            jdbc.update("update products set category = ? where business_id = ? and id in (" + placeholders(ids.size()) + ")",
+                    a.toArray());
+        }
+    }
+
+    public void renameCategory(String from, String to) {
+        if (from.equals(to)) return;
+        if (FALLBACK_CATEGORY.equals(from)) throw new IllegalArgumentException("Категорию «" + FALLBACK_CATEGORY + "» переименовать нельзя");
+        jdbc.update("update products set category = ? where business_id = ? and category = ?", to, bid(), from);
+        createCategory(to);
+        jdbc.update("delete from categories where business_id = ? and name = ?", bid(), from);
+    }
+
+    public void deleteCategory(String name) {
+        if (FALLBACK_CATEGORY.equals(name)) throw new IllegalArgumentException("Категорию «" + FALLBACK_CATEGORY + "» удалить нельзя");
+        jdbc.update("update products set category = ? where business_id = ? and category = ?", FALLBACK_CATEGORY, bid(), name);
+        jdbc.update("delete from categories where business_id = ? and name = ?", bid(), name);
+    }
+
+    // ---------- Otchyoty ----------
+
+    public record TopProduct(String name, long qty, long revenue) {}
+    public record CashierSales(String cashier, int receipts, long total) {}
+
+    /** Samye prodavaemye tovary za period (razmery odnogo tovara skladyvayutsya). */
+    @Transactional(readOnly = true)
+    public List<TopProduct> topProducts(LocalDate since, int limit) {
+        return jdbc.query("""
+                select oi.product_name, coalesce(sum(oi.quantity),0), coalesce(sum(oi.price * oi.quantity),0)
+                from order_items oi join orders o on o.id = oi.order_id
+                where o.business_id = ? and o.created_at >= ?
+                group by oi.product_name order by 3 desc limit """ + " " + limit,
+                (rs, i) -> new TopProduct(rs.getString(1), rs.getLong(2), rs.getLong(3)),
+                bid(), ts(since.atStartOfDay()));
+    }
+
+    @Transactional(readOnly = true)
+    public List<CashierSales> salesByCashier(LocalDate since) {
+        return jdbc.query("""
+                select coalesce(cashier_name, '—'), count(*), coalesce(sum(total),0)
+                from orders where business_id = ? and created_at >= ?
+                group by cashier_name order by 3 desc""",
+                (rs, i) -> new CashierSales(rs.getString(1), rs.getInt(2), rs.getLong(3)),
+                bid(), ts(since.atStartOfDay()));
+    }
+
     // ---------- Cashiers (tablica users, rol' CASHIER) ----------
 
     private final RowMapper<Cashier> cashierMapper = (rs, i) -> new Cashier(
@@ -382,14 +483,14 @@ public class DataStore {
 
     // ---------- Itogi (summy schitaet baza, a ne Java) ----------
 
-    public record ShiftTotals(int cash, int card, int count) {}
+    public record ShiftTotals(long cash, long card, int count) {}
 
     /** Nal, karta i kolichestvo chekov odnoy smeny - odin zapros. */
     @Transactional(readOnly = true)
     public ShiftTotals totalsForShift(String shiftId) {
         return jdbc.queryForObject(
                 "select coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0), count(*) from orders where business_id = ? and shift_id = ?",
-                (rs, i) -> new ShiftTotals(rs.getInt(1), rs.getInt(2), rs.getInt(3)), bid(), shiftId);
+                (rs, i) -> new ShiftTotals(rs.getLong(1), rs.getLong(2), rs.getInt(3)), bid(), shiftId);
     }
 
     /** Itogi vseh smen biznesa srazu - odin zapros vmesto neskol'kih na kazhduyu smenu. */
@@ -398,27 +499,28 @@ public class DataStore {
         Map<String, ShiftTotals> m = new HashMap<>();
         jdbc.query("select shift_id, coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0), count(*) "
                         + "from orders where business_id = ? and shift_id is not null group by shift_id",
-                rs -> { m.put(rs.getString(1), new ShiftTotals(rs.getInt(2), rs.getInt(3), rs.getInt(4))); },
+                rs -> { m.put(rs.getString(1), new ShiftTotals(rs.getLong(2), rs.getLong(3), rs.getInt(4))); },
                 bid());
         return m;
     }
 
     /** byMethod: sposob oplaty -> {kolichestvo chekov, summa chekov}. */
-    public record PeriodStats(int count, int total, int cash, int card, Map<String, int[]> byMethod) {}
+    public record PeriodStats(int count, long total, long cash, long card, Map<String, long[]> byMethod) {}
 
     @Transactional(readOnly = true)
     public PeriodStats statsSince(LocalDate since) {
-        int[] t = new int[4]; // count, total, cash, card
-        Map<String, int[]> by = new HashMap<>();
+        long[] t = new long[4]; // count, total, cash, card
+        Map<String, long[]> by = new HashMap<>();
         jdbc.query("select payment_method, count(*), coalesce(sum(total),0), coalesce(sum(cash_amount),0), coalesce(sum(card_amount),0) "
                         + "from orders where business_id = ? and created_at >= ? group by payment_method",
                 rs -> {
-                    int c = rs.getInt(2), tot = rs.getInt(3), cash = rs.getInt(4), card = rs.getInt(5);
-                    by.put(rs.getString(1), new int[]{c, tot});
+                    int c = rs.getInt(2);
+                    long tot = rs.getLong(3), cash = rs.getLong(4), card = rs.getLong(5);
+                    by.put(rs.getString(1), new long[]{c, tot});
                     t[0] += c; t[1] += tot; t[2] += cash; t[3] += card;
                 },
                 bid(), ts(since.atStartOfDay()));
-        return new PeriodStats(t[0], t[1], t[2], t[3], by);
+        return new PeriodStats((int) t[0], t[1], t[2], t[3], by);
     }
 
     // ---------- Inventory movements (tovarnyy prihod/rashod, ne kassa) ----------

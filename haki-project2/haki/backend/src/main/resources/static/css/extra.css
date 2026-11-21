@@ -1,0 +1,97 @@
+/* Дополнения интерфейса: категории, форма товара, выбор размера, чеки, отчёты. Использует переменные из style.css */
+
+.muted { color: var(--text-dim); font-size: 13px; }
+
+/* ---- поля в панели инструментов ---- */
+.toolbar { align-items: center; }
+.toolbar-input, .filter-select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    min-width: 0;
+}
+.toolbar-input.grow { flex: 1 1 220px; }
+.toolbar-input::placeholder { color: var(--text-dim); }
+.filter-select { cursor: pointer; }
+.toolbar-input:focus, .filter-select:focus,
+.form-grid input:focus, .form-grid select:focus, .cm-row:focus-within {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---- окна ---- */
+.modal.wide { width: 560px; max-height: 90vh; overflow-y: auto; }
+.form-grid.full { max-width: none; }
+.field-label { display: block; font-size: 12px; color: var(--text-dim); margin: 6px 0 6px 0; }
+.check-row {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--text); margin: 8px 0 12px 0; cursor: pointer;
+}
+.check-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* ---- выбор размера на кассе ---- */
+.size-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+.size-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 16px 10px; cursor: pointer; font-size: 18px;
+    font-family: "Fraunces", Georgia, serif; font-weight: 700;
+    transition: background .15s, border-color .15s, transform .1s;
+}
+.size-btn b { font-size: 12px; color: var(--accent); font-family: "Inter", sans-serif; font-weight: 700; }
+.size-btn:hover { background: var(--bg-card-hover); border-color: var(--accent); }
+.size-btn:active { transform: scale(.97); }
+
+/* ---- форма товара: размеры ---- */
+.pm-size-row { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 8px; margin-bottom: 8px; }
+.pm-size-row input {
+    width: 100%; background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: 8px; font-size: 13px;
+}
+.pm-size-row .btn { padding: 8px 12px; }
+
+/* ---- категории: выбор товаров ---- */
+.cm-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cm-list {
+    max-height: 42vh; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg-card);
+}
+.cm-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border-soft);
+    cursor: pointer; font-size: 14px;
+}
+.cm-row:last-child { border-bottom: none; }
+.cm-row:hover { background: var(--bg-card-hover); }
+.cm-row input { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+.cm-name { flex: 1; }
+.cm-cat { font-size: 11px; color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 2px 8px; white-space: nowrap; }
+
+/* ---- таблицы ---- */
+table.data-table.clickable tbody tr { cursor: pointer; }
+.row-actions { white-space: nowrap; text-align: right; }
+.row-actions .btn { padding: 6px 12px; margin-left: 6px; }
+.tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 10px; background: var(--accent-dim); color: var(--accent-bright); }
+
+/* ---- отчёты: полоска ---- */
+.bar { height: 8px; background: var(--bg-card); border-radius: 6px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-bright)); border-radius: 6px; }
+
+/* ---- чек ---- */
+.rc-meta { color: var(--text-dim); font-size: 13px; margin-bottom: 12px; line-height: 1.6; }
+.rc-total { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.rc-total b { font-family: "Fraunces", Georgia, serif; font-size: 22px; color: var(--accent-bright); }
+.rc-lines { margin-top: 10px; font-size: 13px; color: var(--text-dim); }
+.rc-lines div { display: flex; justify-content: space-between; padding: 2px 0; }
+.rc-lines b { color: var(--text); font-weight: 600; }
+
+/* ---- мобильные экраны ---- */
+@media (max-width: 700px) {
+    .modal.wide { width: 94vw; }
+    .toolbar-input.grow { flex-basis: 100%; }
+    .pm-size-row { grid-template-columns: 1fr 1fr auto; }
+}

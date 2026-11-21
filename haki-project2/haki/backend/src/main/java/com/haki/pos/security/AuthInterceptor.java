@@ -12,7 +12,7 @@ import java.io.IOException;
  * Proveryaet token na kazhdom /api/**, rol' i biznes.
  *  - /api/auth/login - otkryt
  *  - /api/superadmin/** - tol'ko SUPERADMIN
- *  - tovary (izmenenie), filialy, kassiry, dashboard, zapiska admina - ADMIN ili SUPERADMIN
+ *  - tovary i kategorii (izmenenie), filialy, kassiry, dashboard, zapiska admina - ADMIN ili SUPERADMIN
  *  - ostal'noe - lyuboy voshedshiy
  * Biznes: u ADMIN/CASHIER - ih sobstvennyy; SUPERADMIN vybiraet zagolovkom X-Business-Id.
  */
@@ -48,10 +48,12 @@ public class AuthInterceptor implements HandlerInterceptor {
             return true;
         }
 
+        boolean readOnly = "GET".equalsIgnoreCase(method);
         boolean adminOnly = path.startsWith("/api/branches")
                 || path.startsWith("/api/cashiers")
                 || path.startsWith("/api/dashboard")
-                || (path.startsWith("/api/products") && !"GET".equalsIgnoreCase(method))
+                || (path.startsWith("/api/products") && !readOnly)
+                || (path.startsWith("/api/categories") && !readOnly)
                 || (path.equals("/api/shifts/admin-note") && "POST".equalsIgnoreCase(method));
         if (adminOnly && user.isCashier()) {
             return deny(res, 403, "Недостаточно прав");

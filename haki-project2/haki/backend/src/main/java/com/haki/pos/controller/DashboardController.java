@@ -29,7 +29,7 @@ public class DashboardController {
     }
 
     private static Map<String, Object> method(DataStore.PeriodStats st, String m) {
-        int[] v = st.byMethod().getOrDefault(m, new int[]{0, 0});
+        long[] v = st.byMethod().getOrDefault(m, new long[]{0, 0});
         return Map.of("count", v[0], "total", v[1]);
     }
 
@@ -68,6 +68,17 @@ public class DashboardController {
     @GetMapping("/payment-breakdown")
     public Map<String, Object> paymentBreakdown(@RequestParam(defaultValue = "today") String period) {
         return breakdown(store.statsSince(sinceFor(period)));
+    }
+
+    /** Otchyot za period: samye prodavaemye tovary i prodazhi po kassiram. */
+    @GetMapping("/reports")
+    public Map<String, Object> reports(@RequestParam(defaultValue = "30d") String period) {
+        LocalDate since = sinceFor(period);
+        return Map.of(
+                "period", period,
+                "top", store.topProducts(since, 15),
+                "cashiers", store.salesByCashier(since)
+        );
     }
 
     @GetMapping("/open-shifts")

@@ -34,7 +34,7 @@ public class ShiftController {
     private Map<String, Object> withLiveTotals(Shift s) {
         DataStore.ShiftTotals t = store.totalsForShift(s.getId());
         int expensesTotal = store.expensesTotalForShift(s.getId());
-        int expectedCashNow = s.getOpeningCash() + t.cash() - expensesTotal;
+        long expectedCashNow = (long) s.getOpeningCash() + t.cash() - expensesTotal;
         return Map.of(
                 "open", true,
                 "shift", s,

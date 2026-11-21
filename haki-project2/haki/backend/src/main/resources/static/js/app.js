@@ -10,6 +10,9 @@ let selectedPayMethod = "CASH";
 let dashboardPeriod = "today";
 let dashboardPayMethod = "all";
 let dashboardBreakdown = null; // razbivka po sposobam oplaty, prihodit vmeste s summary
+let categoriesCache = [];      // [{name, products}] - sobstvennye kategorii biznesa
+let receiptsCache = [];        // poslednie cheki dlya filtrov
+let currentReceipt = null;     // chek, otkrytyy v okne
 
 // kassir, ot imeni kotorogo sovershayutsya deystviya - zapolnyaetsya posle logina.
 let CASHIER_NAME = "";
@@ -223,13 +226,15 @@ function switchPanel(name) {
     document.querySelectorAll(".nav-item[data-panel]").forEach(i => i.classList.toggle("active", i.dataset.panel === name));
     document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
 
-    if (name === "pos") safeLoad(refreshShiftBanner);
+    if (name === "pos") safeLoad(() => Promise.all([refreshShiftBanner(), refreshProducts()]));
     if (name === "receipts") safeLoad(loadReceipts);
     if (name === "shifts") safeLoad(loadShiftsPanel);
     if (name === "expenses") safeLoad(loadExpensesPanel);
     if (name === "stock-in") safeLoad(() => Promise.all([loadProductSelect("inProductSelect"), loadMovements("IN")]));
     if (name === "stock-out") safeLoad(() => Promise.all([loadProductSelect("outProductSelect"), loadMovements("OUT")]));
     if (name === "products") safeLoad(loadProductsTable);
+    if (name === "categories") safeLoad(loadCategories);
+    if (name === "reports") safeLoad(loadReports);
     if (name === "customers") safeLoad(loadCustomersTable);
     if (name === "dashboard") safeLoad(loadDashboard);
     if (name === "branches") safeLoad(loadBranches);
@@ -264,13 +269,18 @@ function renderTabs() {
     });
 }
 
-function renderProductList() {
-    const box = document.getElementById("posList");
+/** Tovary, kotorye seychas vidny na kasse (kategoriya + poisk). */
+function visibleProducts() {
     const q = document.getElementById("posSearch").value.trim().toLowerCase();
-
     let list = allProducts;
     if (activeCategory !== "Все") list = list.filter(p => p.category === activeCategory);
     if (q) list = list.filter(p => p.name.toLowerCase().includes(q));
+    return list;
+}
+
+function renderProductList() {
+    const box = document.getElementById("posList");
+    const list = visibleProducts();
 
     if (list.length === 0) {
         box.innerHTML = '<div class="cart-empty">Ничего не найдено</div>';
@@ -308,15 +318,31 @@ function priceLabelFor(p) {
     return "от " + money(min);
 }
 
+/** Tovar s neskol'kimi razmerami - snachala sprashivaem razmer, inache srazu v korzinu. */
 function addToCartFlow(product) {
     const sizes = Object.keys(product.prices).filter(s => s !== "BASE");
-    let size = null, price;
-    if (sizes.length > 0) {
-        size = sizes.includes("M") ? "M" : sizes[0];
-        price = product.prices[size];
-    } else {
-        price = product.prices.BASE;
-    }
+    if (sizes.length > 1) { openSizeModal(product, sizes); return; }
+    if (sizes.length === 1) { pushToCart(product, sizes[0], product.prices[sizes[0]]); return; }
+    pushToCart(product, null, product.prices.BASE);
+}
+
+function openSizeModal(product, sizes) {
+    document.getElementById("sizeModalTitle").textContent = product.name;
+    const box = document.getElementById("sizeModalButtons");
+    box.innerHTML = sizes.map(s =>
+        `<button class="size-btn" data-size="${esc(s)}"><span>${esc(s)}</span><b>${money(product.prices[s])}</b></button>`).join("");
+    box.onclick = (e) => {
+        const b = e.target.closest(".size-btn");
+        if (!b) return;
+        hideModal("sizeModalBackdrop");
+        pushToCart(product, b.dataset.size, product.prices[b.dataset.size]);
+    };
+    showModal("sizeModalBackdrop");
+}
+document.getElementById("sizeModalCancel").onclick = () => hideModal("sizeModalBackdrop");
+
+function pushToCart(product, size, price) {
+    if (product.stockQty <= 0) toast("Остаток «" + product.name + "»: 0 — проверьте склад", true);
     const existing = cart.find(i => i.productId === product.id && i.size === size);
     if (existing) {
         existing.quantity += 1;
@@ -375,6 +401,17 @@ document.getElementById("posSearch").addEventListener("input", () => {
     clearTimeout(searchDebounce);
     searchDebounce = setTimeout(renderProductList, 120);
 });
+// Enter v poiske - srazu dobavit' pervyy naydennyy tovar (udobno s klaviaturoy / skanerom)
+document.getElementById("posSearch").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    clearTimeout(searchDebounce);
+    const list = visibleProducts();
+    if (document.getElementById("posSearch").value.trim() && list.length > 0) {
+        addToCartFlow(list[0]);
+        document.getElementById("posSearch").value = "";
+        renderProductList();
+    }
+});
 
 // ---------- shift banner on POS ----------
 
@@ -420,6 +457,7 @@ function openPayModal() {
     const total = cartTotal();
     document.getElementById("mixedCashInput").value = total;
     document.getElementById("mixedCardInput").value = 0;
+    document.getElementById("payPrintCheck").checked = localStorage.getItem("haki_print") === "1";
     payModalBackdrop.classList.add("show");
 }
 
@@ -501,6 +539,9 @@ document.getElementById("payModalConfirm").onclick = async () => {
         bonusUsed
     };
 
+    const printAfter = document.getElementById("payPrintCheck").checked;
+    localStorage.setItem("haki_print", printAfter ? "1" : "0");
+
     const btn = document.getElementById("payModalConfirm");
     const oldText = btn.textContent;
     payInFlight = true;
@@ -526,6 +567,8 @@ document.getElementById("payModalConfirm").onclick = async () => {
 
         // tochnye dannye podtyagivaem v fone
         Promise.all([refreshProducts(), refreshShiftBanner()]).catch(() => {});
+
+        if (printAfter) printReceipt(saved);
     } catch (e) {
         toast(e.message, true);
     } finally {
@@ -537,14 +580,47 @@ document.getElementById("payModalConfirm").onclick = async () => {
 
 // ---------- CHEKI ----------
 
+const METHOD_LABEL = { CASH: "Наличные", CARD: "Карта", MIXED: "Смешанная", DEBT: "Долг" };
+
 async function loadReceipts() {
-    const orders = await api("/orders"); // novye pervymi
-    const body = document.getElementById("receiptsBody");
-    const methodLabel = { CASH: "Наличные", CARD: "Карта", MIXED: "Смешанная", DEBT: "Долг" };
-    body.innerHTML = orders.map(o => `<tr><td>${esc(o.id)}</td><td>${fmtDateTime(o.createdAt)}</td><td>${esc(o.cashierName) || "—"}</td>
-            <td>${methodLabel[o.paymentMethod] || esc(o.paymentMethod)}</td>
+    receiptsCache = await api("/orders"); // novye pervymi
+    renderReceipts();
+}
+
+/** Filtry po tekstu, sposobu oplaty i periodu rabotayut na uzhe zagruzhennyh chekah - bez novyh zaprosov. */
+function renderReceipts() {
+    const q = document.getElementById("rcSearch").value.trim().toLowerCase();
+    const method = document.getElementById("rcMethod").value;
+    const period = document.getElementById("rcPeriod").value;
+    let since = 0;
+    if (period === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); since = d.getTime(); }
+    else if (period === "7d") since = Date.now() - 7 * 86400000;
+
+    const list = receiptsCache.filter(o =>
+        (!method || o.paymentMethod === method) &&
+        (!since || new Date(o.createdAt).getTime() >= since) &&
+        (!q || [o.id, o.cashierName, o.customerPhone].some(v => (v || "").toLowerCase().includes(q))));
+
+    const sum = list.reduce((s, o) => s + (o.total || 0), 0);
+    document.getElementById("rcSummary").textContent = list.length + " чек. · " + money(sum);
+    document.getElementById("receiptsBody").innerHTML = list.length === 0
+        ? '<tr><td colspan="6" class="muted">Чеков не найдено</td></tr>'
+        : list.map(o => `<tr data-id="${esc(o.id)}"><td>${esc(o.id)}</td><td>${fmtDateTime(o.createdAt)}</td><td>${esc(o.cashierName) || "—"}</td>
+            <td>${METHOD_LABEL[o.paymentMethod] || esc(o.paymentMethod)}</td>
             <td>${esc(o.customerPhone) || "—"}</td><td>${money(o.total)}</td></tr>`).join("");
 }
+
+let rcDebounce;
+document.getElementById("rcSearch").addEventListener("input", () => { clearTimeout(rcDebounce); rcDebounce = setTimeout(renderReceipts, 150); });
+document.getElementById("rcMethod").addEventListener("change", renderReceipts);
+document.getElementById("rcPeriod").addEventListener("change", renderReceipts);
+
+document.getElementById("receiptsBody").addEventListener("click", (e) => {
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    const o = receiptsCache.find(x => x.id === tr.dataset.id);
+    if (o) openReceiptModal(o);
+});
 
 // ---------- SMENY ----------
 
@@ -748,43 +824,389 @@ document.getElementById("outSubmit").onclick = () => submitMovement("OUT");
 
 // ---------- TOVARY ----------
 
-async function loadProductsTable() {
-    allProducts = await api("/products");
-    const body = document.getElementById("productsBody");
-    body.innerHTML = "";
-    allProducts.forEach(p => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-            <td>${esc(p.name)}</td>
-            <td>${esc(p.category)}</td>
-            <td>${priceLabelFor(p)}</td>
-            <td style="${p.isLowStock ? "color:var(--danger)" : ""}">${p.stockQty} ${esc(p.unit)}</td>
-            <td><button class="btn danger" data-id="${esc(p.id)}">Удалить</button></td>
-        `;
-        tr.querySelector("button").onclick = async () => {
-            if (!confirm("Удалить товар «" + p.name + "»?")) return;
-            await api("/products/" + p.id, { method: "DELETE" });
-            loadProductsTable();
-        };
-        body.appendChild(tr);
-    });
+// ---------- OKNA (obschie pomoschniki) ----------
+
+function showModal(id) { document.getElementById(id).classList.add("show"); }
+function hideModal(id) { document.getElementById(id).classList.remove("show"); }
+
+document.addEventListener("keydown", (e) => {
+    // Esc - zakryt' otkrytoe okno
+    if (e.key === "Escape") {
+        document.querySelectorAll(".modal-backdrop.show").forEach(m => m.classList.remove("show"));
+    }
+    // F2 - oplata tekuschego cheka
+    if (e.key === "F2" && cart.length > 0
+        && !document.querySelector(".modal-backdrop.show")
+        && document.getElementById("panel-pos").classList.contains("active")) {
+        e.preventDefault();
+        openPayModal();
+    }
+});
+
+const num = n => (n || 0).toLocaleString("ru-RU");
+
+// ---------- TOVARY ----------
+
+function categoryNames() {
+    return [...new Set([...categoriesCache.map(c => c.name), ...allProducts.map(p => p.category)])]
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, "ru"));
 }
 
-document.getElementById("addProductBtn").onclick = async () => {
-    const name = prompt("Название товара:");
-    if (!name) return;
-    const category = prompt("Категория:", "Остальные") || "Остальные";
-    const price = parseInt(prompt("Цена (UZS):", "10000") || "0", 10);
-    const stock = parseInt(prompt("Начальный остаток:", "0") || "0", 10);
+async function loadProductsTable() {
+    const [prods, cats] = await Promise.all([api("/products"), api("/categories").catch(() => [])]);
+    allProducts = prods;
+    categoriesCache = cats;
+    const sel = document.getElementById("prCategory");
+    const prev = sel.value;
+    const names = categoryNames();
+    sel.innerHTML = '<option value="">Все категории</option>' + names.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    sel.value = names.includes(prev) ? prev : "";
+    renderProductsTable();
+}
+
+function renderProductsTable() {
+    const q = document.getElementById("prSearch").value.trim().toLowerCase();
+    const cat = document.getElementById("prCategory").value;
+    const list = allProducts.filter(p => (!cat || p.category === cat) && (!q || p.name.toLowerCase().includes(q)));
+    document.getElementById("prSummary").textContent = list.length + " из " + allProducts.length + " товаров";
+    document.getElementById("productsBody").innerHTML = list.length === 0
+        ? '<tr><td colspan="5" class="muted">Товаров не найдено</td></tr>'
+        : list.map(p => `<tr data-id="${esc(p.id)}">
+            <td>${esc(p.name)}</td>
+            <td><span class="tag">${esc(p.category)}</span></td>
+            <td>${priceLabelFor(p)}</td>
+            <td style="${p.isLowStock ? "color:var(--danger)" : ""}">${p.stockQty} ${esc(p.unit)}</td>
+            <td class="row-actions"><button class="btn" data-act="edit">Изменить</button><button class="btn danger" data-act="del">Удалить</button></td>
+        </tr>`).join("");
+}
+
+let prDebounce;
+document.getElementById("prSearch").addEventListener("input", () => { clearTimeout(prDebounce); prDebounce = setTimeout(renderProductsTable, 150); });
+document.getElementById("prCategory").addEventListener("change", renderProductsTable);
+
+document.getElementById("productsBody").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    const tr = e.target.closest("tr[data-id]");
+    if (!btn || !tr) return;
+    const p = allProducts.find(x => x.id === tr.dataset.id);
+    if (!p) return;
+    if (btn.dataset.act === "edit") { openProductModal(p); return; }
+    if (!confirm("Удалить товар «" + p.name + "»?")) return;
     try {
-        await api("/products", {
-            method: "POST",
-            body: JSON.stringify({ name, category, prices: { BASE: price }, stockQty: stock, minStockQty: 5, unit: "шт" })
-        });
-        toast("Товар добавлен");
+        await api("/products/" + encodeURIComponent(p.id), { method: "DELETE" });
+        toast("Товар удалён");
         loadProductsTable();
-    } catch (e) { toast(e.message, true); }
+    } catch (err) { toast(err.message, true); }
+});
+
+// ---------- OKNO TOVARA (dobavit' / izmenit') ----------
+
+let editingProductId = null;
+let pmInFlight = false;
+
+function pmSizeRow(label = "", price = "") {
+    return `<div class="pm-size-row">
+        <input type="text" class="pm-size-label" placeholder="Размер (S, M, L…)" value="${esc(label)}" maxlength="12">
+        <input type="number" class="pm-size-price" min="0" placeholder="Цена" value="${esc(price)}">
+        <button class="btn danger pm-del" type="button" title="Убрать">✕</button>
+    </div>`;
+}
+
+function setPmMulti(on) {
+    document.getElementById("pmSingle").style.display = on ? "none" : "grid";
+    document.getElementById("pmSizes").style.display = on ? "block" : "none";
+}
+
+function openProductModal(p) {
+    editingProductId = p ? p.id : null;
+    document.getElementById("productModalTitle").textContent = p ? "Изменить товар" : "Новый товар";
+    document.getElementById("pmName").value = p ? p.name : "";
+    document.getElementById("pmCategory").value = p ? p.category : (document.getElementById("prCategory").value || "");
+    document.getElementById("pmCategoryList").innerHTML = categoryNames().map(c => `<option value="${esc(c)}"></option>`).join("");
+    document.getElementById("pmUnit").value = p ? p.unit : "шт";
+    document.getElementById("pmMin").value = p ? p.minStockQty : 5;
+
+    const stock = document.getElementById("pmStock");
+    stock.value = p ? p.stockQty : 0;
+    stock.disabled = !!p;
+    document.getElementById("pmStockLabel").textContent = p
+        ? "Остаток (меняется через «Приход» и «Расход товара»)" : "Начальный остаток";
+
+    const sizes = p ? Object.keys(p.prices).filter(s => s !== "BASE") : [];
+    const multi = sizes.length > 0;
+    document.getElementById("pmMulti").checked = multi;
+    setPmMulti(multi);
+    document.getElementById("pmPrice").value = p && !multi && p.prices.BASE != null ? p.prices.BASE : "";
+    document.getElementById("pmSizeRows").innerHTML = multi ? sizes.map(s => pmSizeRow(s, p.prices[s])).join("") : "";
+
+    showModal("productModalBackdrop");
+    document.getElementById("pmName").focus();
+}
+
+document.getElementById("addProductBtn").onclick = () => openProductModal(null);
+document.getElementById("pmCancel").onclick = () => hideModal("productModalBackdrop");
+
+document.getElementById("pmMulti").addEventListener("change", (e) => {
+    setPmMulti(e.target.checked);
+    const rows = document.getElementById("pmSizeRows");
+    if (e.target.checked && rows.children.length === 0) rows.innerHTML = pmSizeRow("S") + pmSizeRow("M");
+});
+document.getElementById("pmAddSize").onclick = () => {
+    document.getElementById("pmSizeRows").insertAdjacentHTML("beforeend", pmSizeRow());
 };
+document.getElementById("pmSizeRows").addEventListener("click", (e) => {
+    const del = e.target.closest(".pm-del");
+    if (del) del.closest(".pm-size-row").remove();
+});
+
+document.getElementById("pmSave").onclick = async () => {
+    if (pmInFlight) return;
+    const name = document.getElementById("pmName").value.trim();
+    if (!name) { toast("Введите название товара", true); return; }
+    const category = document.getElementById("pmCategory").value.trim() || "Остальные";
+    const unit = document.getElementById("pmUnit").value.trim() || "шт";
+    const stockQty = editingProductId ? 0 : Math.max(0, parseInt(document.getElementById("pmStock").value || "0", 10) || 0);
+    const minStockQty = Math.max(0, parseInt(document.getElementById("pmMin").value || "0", 10) || 0);
+
+    let prices = {};
+    if (document.getElementById("pmMulti").checked) {
+        for (const row of document.querySelectorAll("#pmSizeRows .pm-size-row")) {
+            const label = row.querySelector(".pm-size-label").value.trim();
+            const priceStr = row.querySelector(".pm-size-price").value;
+            if (!label && priceStr === "") continue; // pustuyu stroku propuskaem
+            const price = parseInt(priceStr, 10);
+            if (!label || isNaN(price) || price < 0) { toast("Заполните размер и цену в каждой строке", true); return; }
+            if (label.toUpperCase() === "BASE") { toast("Название размера «BASE» зарезервировано", true); return; }
+            if (prices[label] !== undefined) { toast("Размер «" + label + "» указан дважды", true); return; }
+            prices[label] = price;
+        }
+        if (Object.keys(prices).length === 0) { toast("Добавьте хотя бы один размер с ценой", true); return; }
+    } else {
+        const price = parseInt(document.getElementById("pmPrice").value, 10);
+        if (isNaN(price) || price < 0) { toast("Укажите цену", true); return; }
+        prices = { BASE: price };
+    }
+
+    const btn = document.getElementById("pmSave");
+    pmInFlight = true;
+    btn.disabled = true;
+    try {
+        const editing = !!editingProductId;
+        await api(editing ? "/products/" + encodeURIComponent(editingProductId) : "/products", {
+            method: editing ? "PUT" : "POST",
+            body: JSON.stringify({ name, category, prices, stockQty, minStockQty, unit })
+        });
+        hideModal("productModalBackdrop");
+        toast(editing ? "Товар сохранён" : "Товар добавлен");
+        await loadProductsTable();
+    } catch (e) {
+        toast(e.message, true);
+    } finally {
+        pmInFlight = false;
+        btn.disabled = false;
+    }
+};
+
+// ---------- KATEGORII ----------
+
+async function loadCategories() {
+    categoriesCache = await api("/categories");
+    document.getElementById("categoriesBody").innerHTML = categoriesCache.length === 0
+        ? '<tr><td colspan="3" class="muted">Категорий пока нет. Нажмите «Новая категория».</td></tr>'
+        : categoriesCache.map(c => `<tr data-name="${esc(c.name)}">
+            <td><b>${esc(c.name)}</b></td>
+            <td>${c.products}</td>
+            <td class="row-actions"><button class="btn" data-act="edit">Название и товары</button><button class="btn danger" data-act="del">Удалить</button></td>
+        </tr>`).join("");
+}
+
+document.getElementById("categoriesBody").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    const tr = e.target.closest("tr[data-name]");
+    if (!btn || !tr) return;
+    const cat = categoriesCache.find(c => c.name === tr.dataset.name);
+    if (!cat) return;
+    if (btn.dataset.act === "edit") { openCategoryModal(cat); return; }
+    const extra = cat.products > 0 ? " Её товары (" + cat.products + ") перейдут в «Остальные»." : "";
+    if (!confirm("Удалить категорию «" + cat.name + "»?" + extra)) return;
+    try {
+        await api("/categories/delete", { method: "POST", body: JSON.stringify({ name: cat.name }) });
+        toast("Категория удалена");
+        await loadCategories();
+        refreshProducts().catch(() => {});
+    } catch (err) { toast(err.message, true); }
+});
+
+document.getElementById("addCategoryBtn").onclick = () => openCategoryModal(null);
+
+let catEditing = null;       // ishodnoe nazvanie ili null dlya novoy
+let cmSelected = new Set();  // id otmechennyh tovarov
+let cmOrder = [];            // poryadok spiska na vremya okna
+let cmInFlight = false;
+
+function cmVisible() {
+    const q = document.getElementById("cmSearch").value.trim().toLowerCase();
+    return q ? cmOrder.filter(p => p.name.toLowerCase().includes(q)) : cmOrder;
+}
+
+function updateCmCount() {
+    document.getElementById("cmCount").textContent = "Выбрано: " + cmSelected.size + " из " + allProducts.length;
+}
+
+function renderCmList() {
+    const list = cmVisible();
+    document.getElementById("cmList").innerHTML = list.length === 0
+        ? '<div class="cart-empty" style="margin:18px 0;">Товаров не найдено</div>'
+        : list.map(p => `<label class="cm-row">
+            <input type="checkbox" data-id="${esc(p.id)}" ${cmSelected.has(p.id) ? "checked" : ""}>
+            <span class="cm-name">${esc(p.name)}</span>
+            ${p.category && p.category !== catEditing ? `<span class="cm-cat">${esc(p.category)}</span>` : ""}
+        </label>`).join("");
+    updateCmCount();
+}
+
+async function openCategoryModal(cat) {
+    try {
+        allProducts = await api("/products"); // aktual'nye kategorii tovarov
+    } catch (e) { toast(e.message, true); return; }
+    catEditing = cat ? cat.name : null;
+    cmSelected = new Set(cat ? allProducts.filter(p => p.category === cat.name).map(p => p.id) : []);
+    // snachala uzhe vhodyaschie v kategoriyu, dal'she po alfavitu
+    cmOrder = [...allProducts].sort((a, b) =>
+        (cmSelected.has(b.id) - cmSelected.has(a.id)) || a.name.localeCompare(b.name, "ru"));
+
+    document.getElementById("catModalTitle").textContent = cat ? "Категория «" + cat.name + "»" : "Новая категория";
+    const nameInput = document.getElementById("cmName");
+    nameInput.value = cat ? cat.name : "";
+    nameInput.disabled = !!cat && cat.name === "Остальные";
+    document.getElementById("cmSearch").value = "";
+    renderCmList();
+    showModal("catModalBackdrop");
+    if (!nameInput.disabled) nameInput.focus();
+}
+
+document.getElementById("cmSearch").addEventListener("input", renderCmList);
+document.getElementById("cmList").addEventListener("change", (e) => {
+    const id = e.target.dataset && e.target.dataset.id;
+    if (!id) return;
+    if (e.target.checked) cmSelected.add(id); else cmSelected.delete(id);
+    updateCmCount();
+});
+document.getElementById("cmAll").onclick = () => { cmVisible().forEach(p => cmSelected.add(p.id)); renderCmList(); };
+document.getElementById("cmNone").onclick = () => { cmVisible().forEach(p => cmSelected.delete(p.id)); renderCmList(); };
+document.getElementById("cmCancel").onclick = () => hideModal("catModalBackdrop");
+
+document.getElementById("cmSave").onclick = async () => {
+    if (cmInFlight) return;
+    const name = document.getElementById("cmName").value.trim().replace(/\s+/g, " ");
+    if (!name) { toast("Введите название категории", true); return; }
+    if (name.toLowerCase() === "все") { toast("Название «Все» зарезервировано", true); return; }
+    const btn = document.getElementById("cmSave");
+    cmInFlight = true;
+    btn.disabled = true;
+    try {
+        if (catEditing && catEditing !== name) {
+            await api("/categories/rename", { method: "POST", body: JSON.stringify({ from: catEditing, to: name }) });
+        }
+        await api("/categories/set", { method: "POST", body: JSON.stringify({ name, productIds: [...cmSelected] }) });
+        hideModal("catModalBackdrop");
+        toast("Категория сохранена");
+        await loadCategories();
+        refreshProducts().catch(() => {});
+    } catch (e) {
+        toast(e.message, true);
+    } finally {
+        cmInFlight = false;
+        btn.disabled = false;
+    }
+};
+
+// ---------- CHEK: sostav i pechat' ----------
+
+function openReceiptModal(o) {
+    currentReceipt = o;
+    document.getElementById("rcModalTitle").textContent = "Чек " + o.id;
+    const items = (o.items || []).map(i => `<tr><td>${esc(i.productName)}${i.size ? " (" + esc(i.size) + ")" : ""}</td><td>${i.quantity}</td><td>${money(i.price)}</td><td>${money(i.price * i.quantity)}</td></tr>`).join("");
+    const lines = [];
+    if (o.cashAmount) lines.push(["Наличными", o.cashAmount]);
+    if (o.cardAmount) lines.push(["Картой", o.cardAmount]);
+    if (o.bonusUsed) lines.push(["Бонусами", o.bonusUsed]);
+    if (o.debtAmount) lines.push(["В долг", o.debtAmount]);
+    if (o.bonusEarned) lines.push(["Начислено бонусов", o.bonusEarned]);
+    document.getElementById("rcModalBody").innerHTML = `
+        <div class="rc-meta">${fmtDateTime(o.createdAt)}<br>
+            Кассир: ${esc(o.cashierName) || "—"} · Оплата: ${METHOD_LABEL[o.paymentMethod] || esc(o.paymentMethod)}
+            ${o.customerPhone ? "<br>Клиент: " + esc(o.customerPhone) : ""}</div>
+        <table class="data-table"><thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead><tbody>${items}</tbody></table>
+        <div class="rc-total"><span>Итого</span><b>${money(o.total)}</b></div>
+        <div class="rc-lines">${lines.map(([l, v]) => `<div><span>${l}</span><b>${money(v)}</b></div>`).join("")}</div>`;
+    showModal("receiptModalBackdrop");
+}
+document.getElementById("rcModalClose").onclick = () => hideModal("receiptModalBackdrop");
+document.getElementById("rcModalPrint").onclick = () => printReceipt(currentReceipt);
+
+function receiptHtml(o) {
+    const biz = window.BUSINESS_NAME || (CURRENT_BUSINESS && CURRENT_BUSINESS.name) || "Haki";
+    const rows = (o.items || []).map(i =>
+        `<div class="n">${esc(i.productName)}${i.size ? " (" + esc(i.size) + ")" : ""}</div>
+         <div class="l"><span>${i.quantity} × ${num(i.price)}</span><span>${num(i.price * i.quantity)}</span></div>`).join("");
+    const pay = [];
+    if (o.cashAmount) pay.push(["Наличными", o.cashAmount]);
+    if (o.cardAmount) pay.push(["Картой", o.cardAmount]);
+    if (o.bonusUsed) pay.push(["Бонусами", o.bonusUsed]);
+    if (o.debtAmount) pay.push(["В долг", o.debtAmount]);
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Чек ${esc(o.id)}</title>
+<style>
+ @page { size: 80mm auto; margin: 3mm; }
+ body { font-family: "Courier New", monospace; font-size: 12px; width: 74mm; margin: 0; color: #000; }
+ h1 { font-size: 15px; text-align: center; margin: 0 0 4px; }
+ .c { text-align: center; } .n { margin-top: 4px; }
+ .l { display: flex; justify-content: space-between; }
+ hr { border: 0; border-top: 1px dashed #000; margin: 6px 0; }
+ .t { font-size: 15px; font-weight: bold; }
+</style></head><body>
+<h1>${esc(biz)}</h1>
+<div class="c">Чек ${esc(o.id)}<br>${esc(fmtDateTime(o.createdAt))}</div><hr>
+${rows}<hr>
+<div class="l t"><span>ИТОГО</span><span>${num(o.total)} UZS</span></div>
+${pay.map(([l, v]) => `<div class="l"><span>${l}</span><span>${num(v)}</span></div>`).join("")}
+${o.bonusEarned ? `<div class="l"><span>Начислено бонусов</span><span>${num(o.bonusEarned)}</span></div>` : ""}
+<hr><div class="c">Кассир: ${esc(o.cashierName || "—")}<br>Спасибо за покупку!</div>
+</body></html>`;
+}
+
+/** Pechat' cherez skrytyy iframe: rabotaet v brauzere i v prilozhenii Windows. V Android-prilozhenii pechat' ne podderzhivaetsya. */
+function printReceipt(o) {
+    if (!o) return;
+    const f = document.createElement("iframe");
+    f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+    document.body.appendChild(f);
+    const doc = f.contentWindow.document;
+    doc.open();
+    doc.write(receiptHtml(o));
+    doc.close();
+    setTimeout(() => {
+        try { f.contentWindow.focus(); f.contentWindow.print(); }
+        catch (e) { toast("Печать недоступна на этом устройстве", true); }
+        setTimeout(() => f.remove(), 3000);
+    }, 250);
+}
+
+// ---------- OTCHYOTY ----------
+
+async function loadReports() {
+    const r = await api("/dashboard/reports?period=" + document.getElementById("repPeriod").value);
+    const max = Math.max(1, ...r.top.map(t => t.revenue));
+    document.getElementById("repTopBody").innerHTML = r.top.length === 0
+        ? '<tr><td colspan="5" class="muted">За этот период продаж нет</td></tr>'
+        : r.top.map((t, i) => `<tr><td>${i + 1}</td><td>${esc(t.name)}</td><td>${t.qty}</td><td>${money(t.revenue)}</td>
+            <td><div class="bar"><i style="width:${Math.round(t.revenue / max * 100)}%"></i></div></td></tr>`).join("");
+    document.getElementById("repCashiersBody").innerHTML = r.cashiers.length === 0
+        ? '<tr><td colspan="3" class="muted">За этот период продаж нет</td></tr>'
+        : r.cashiers.map(c => `<tr><td>${esc(c.cashier)}</td><td>${c.receipts}</td><td>${money(c.total)}</td></tr>`).join("");
+}
+document.getElementById("repPeriod").addEventListener("change", () => safeLoad(loadReports));
 
 // ---------- KLIENTY ----------
 

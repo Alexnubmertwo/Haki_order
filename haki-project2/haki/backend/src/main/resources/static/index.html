@@ -4,7 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Haki — POS и склад</title>
+<!-- шрифты подключаются из style.css через Google Fonts: заранее открываем соединение, чтобы страница открывалась быстрее -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/extra.css">
 </head>
 <body>
 
@@ -61,6 +65,7 @@
         <div class="nav-item" data-panel="stock-in"><span class="icon">⬇️</span> Приход</div>
         <div class="nav-item" data-panel="stock-out"><span class="icon">⬆️</span> Расход товара</div>
         <div class="nav-item admin-only" data-panel="products"><span class="icon">📦</span> Товары</div>
+        <div class="nav-item admin-only" data-panel="categories"><span class="icon">🗂️</span> Категории</div>
         <div class="nav-item" data-panel="customers"><span class="icon">💳</span> Клиенты</div>
         <div class="nav-item admin-only" data-panel="reports"><span class="icon">📊</span> Отчёты</div>
         <div class="nav-item admin-only" data-panel="dashboard"><span class="icon">📋</span> Дашборд <span class="badge" id="dashboardBadge" style="display:none">0</span></div>
@@ -89,10 +94,27 @@
         <!-- PANEL: CHEKI -->
         <div class="panel" id="panel-receipts">
             <h1>Чеки</h1>
-            <table class="data-table">
+            <div class="toolbar">
+                <input class="toolbar-input grow" id="rcSearch" placeholder="🔍 № чека, кассир или телефон клиента">
+                <select class="filter-select" id="rcPeriod">
+                    <option value="today">Сегодня</option>
+                    <option value="7d">7 дней</option>
+                    <option value="all">Все (последние 300)</option>
+                </select>
+                <select class="filter-select" id="rcMethod">
+                    <option value="">Любая оплата</option>
+                    <option value="CASH">Наличные</option>
+                    <option value="CARD">Карта</option>
+                    <option value="MIXED">Смешанная</option>
+                    <option value="DEBT">Долг</option>
+                </select>
+            </div>
+            <div class="muted" id="rcSummary" style="margin-bottom:10px;"></div>
+            <table class="data-table clickable">
                 <thead><tr><th>№ чека</th><th>Время</th><th>Кассир</th><th>Оплата</th><th>Клиент</th><th>Сумма</th></tr></thead>
                 <tbody id="receiptsBody"></tbody>
             </table>
+            <p class="muted" style="font-size:12px;">Нажмите на чек, чтобы увидеть состав и распечатать.</p>
         </div>
 
         <!-- PANEL: SMENY -->
@@ -215,10 +237,26 @@
             <h1>Товары</h1>
             <div class="toolbar">
                 <button class="btn primary" id="addProductBtn">+ Добавить товар</button>
+                <input class="toolbar-input grow" id="prSearch" placeholder="🔍 Поиск по названию">
+                <select class="filter-select" id="prCategory"></select>
             </div>
+            <div class="muted" id="prSummary" style="margin-bottom:10px;"></div>
             <table class="data-table">
                 <thead><tr><th>Название</th><th>Категория</th><th>Цена</th><th>Остаток</th><th></th></tr></thead>
                 <tbody id="productsBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: KATEGORII -->
+        <div class="panel" id="panel-categories">
+            <h1>Категории</h1>
+            <p class="muted">Создайте категорию и отметьте товары, которые в неё входят. Категории показываются вкладками на экране продаж.</p>
+            <div class="toolbar">
+                <button class="btn primary" id="addCategoryBtn">+ Новая категория</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Категория</th><th>Товаров</th><th></th></tr></thead>
+                <tbody id="categoriesBody"></tbody>
             </table>
         </div>
 
@@ -235,7 +273,25 @@
         <!-- PANEL: OTCHETY -->
         <div class="panel" id="panel-reports">
             <h1>Отчёты</h1>
-            <p style="color:var(--text-dim);">Раздел в разработке.</p>
+            <div class="toolbar">
+                <select class="filter-select" id="repPeriod">
+                    <option value="today">Сегодня</option>
+                    <option value="7d">7 дней</option>
+                    <option value="30d" selected>30 дней</option>
+                </select>
+            </div>
+
+            <h1 style="font-size:16px;">Самые продаваемые товары</h1>
+            <table class="data-table">
+                <thead><tr><th>#</th><th>Товар</th><th>Продано</th><th>Выручка</th><th style="width:30%;"></th></tr></thead>
+                <tbody id="repTopBody"></tbody>
+            </table>
+
+            <h1 style="font-size:16px; margin-top:24px;">Продажи по кассирам</h1>
+            <table class="data-table">
+                <thead><tr><th>Кассир</th><th>Чеков</th><th>Сумма</th></tr></thead>
+                <tbody id="repCashiersBody"></tbody>
+            </table>
         </div>
 
         <!-- PANEL: DASHBOARD -->
@@ -405,9 +461,109 @@
         </div>
         <div id="bonusInfoBox" style="display:none;"></div>
 
+        <label class="check-row"><input type="checkbox" id="payPrintCheck"> Печатать чек после оплаты</label>
+
         <div class="modal-actions">
             <button class="btn" id="payModalCancel">Отмена</button>
             <button class="btn primary" id="payModalConfirm">Подтвердить оплату</button>
+        </div>
+    </div>
+</div>
+
+<!-- SIZE MODAL: выбор размера на кассе -->
+<div class="modal-backdrop" id="sizeModalBackdrop">
+    <div class="modal">
+        <div class="modal-title" id="sizeModalTitle">Размер</div>
+        <div class="muted" style="margin-bottom:12px;">Выберите размер</div>
+        <div class="size-grid" id="sizeModalButtons"></div>
+        <div class="modal-actions">
+            <button class="btn" id="sizeModalCancel">Отмена</button>
+        </div>
+    </div>
+</div>
+
+<!-- PRODUCT MODAL: добавить / изменить товар -->
+<div class="modal-backdrop" id="productModalBackdrop">
+    <div class="modal wide">
+        <div class="modal-title" id="productModalTitle">Новый товар</div>
+        <div class="form-grid full">
+            <div style="grid-column: span 2;">
+                <label>Название</label>
+                <input type="text" id="pmName" placeholder="Например: Лаваш говяжий" maxlength="80">
+            </div>
+            <div>
+                <label>Категория</label>
+                <input type="text" id="pmCategory" list="pmCategoryList" placeholder="Выберите или впишите новую" maxlength="40">
+                <datalist id="pmCategoryList"></datalist>
+            </div>
+            <div>
+                <label>Единица измерения</label>
+                <input type="text" id="pmUnit" value="шт" maxlength="10">
+            </div>
+            <div>
+                <label id="pmStockLabel">Начальный остаток</label>
+                <input type="number" id="pmStock" min="0" value="0">
+            </div>
+            <div>
+                <label>Предупреждать, когда осталось не больше</label>
+                <input type="number" id="pmMin" min="0" value="5">
+            </div>
+        </div>
+
+        <label class="check-row"><input type="checkbox" id="pmMulti"> Несколько размеров (S / M / L …)</label>
+
+        <div id="pmSingle" class="form-grid full">
+            <div style="grid-column: span 2;">
+                <label>Цена (UZS)</label>
+                <input type="number" id="pmPrice" min="0" placeholder="25000">
+            </div>
+        </div>
+        <div id="pmSizes" style="display:none;">
+            <div id="pmSizeRows"></div>
+            <button class="btn" type="button" id="pmAddSize">+ Размер</button>
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn" id="pmCancel">Отмена</button>
+            <button class="btn primary" id="pmSave">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- CATEGORY MODAL: категория и выбор товаров -->
+<div class="modal-backdrop" id="catModalBackdrop">
+    <div class="modal wide">
+        <div class="modal-title" id="catModalTitle">Новая категория</div>
+        <div class="form-grid full" style="grid-template-columns:1fr;">
+            <div>
+                <label>Название категории</label>
+                <input type="text" id="cmName" placeholder="Например: Напитки" maxlength="40">
+            </div>
+        </div>
+        <label class="field-label">Какие товары входят в эту категорию</label>
+        <div class="cm-tools">
+            <input type="text" class="toolbar-input grow" id="cmSearch" placeholder="🔍 Найти товар">
+            <button class="btn" type="button" id="cmAll">Выбрать все</button>
+            <button class="btn" type="button" id="cmNone">Снять все</button>
+        </div>
+        <div class="muted" id="cmCount" style="margin:6px 0;"></div>
+        <div class="cm-list" id="cmList"></div>
+        <p class="muted" style="font-size:12px; margin:8px 0 0 0;">Товар может быть только в одной категории: отмеченные товары переедут сюда, а снятые вернутся в «Остальные».</p>
+        <div class="modal-actions">
+            <button class="btn" id="cmCancel">Отмена</button>
+            <button class="btn primary" id="cmSave">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- RECEIPT MODAL: состав чека и печать -->
+<div class="modal-backdrop" id="receiptModalBackdrop">
+    <div class="modal wide">
+        <div class="modal-title" id="rcModalTitle">Чек</div>
+        <div id="rcModalBody"></div>
+        <div class="modal-actions">
+            <button class="btn" id="rcModalClose">Закрыть</button>
+            <button class="btn primary" id="rcModalPrint">🖨 Печать</button>
         </div>
     </div>
 </div>
