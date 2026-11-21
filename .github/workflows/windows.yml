@@ -1,0 +1,56 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Адрес сервера (https://haki-xxxx.onrender.com). Можно оставить пустым: программа спросит при первом запуске"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "haki-project2/haki/windows/**"
+      - ".github/workflows/windows.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: haki-project2/haki/windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Server URL
+        shell: bash
+        run: printf '%s' "${{ github.event.inputs.server_url }}" > default-url.txt
+
+      - name: Install
+        run: npm install
+
+      - name: Build
+        run: npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Haki-POS-windows
+          path: |
+            haki-project2/haki/windows/dist/Haki-POS-Setup.exe
+            haki-project2/haki/windows/dist/Haki-POS-Portable.exe
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-latest
+          name: Haki POS (Windows)
+          body: "Последняя сборка для Windows. Haki-POS-Setup.exe: установщик. Haki-POS-Portable.exe: запуск без установки."
+          files: |
+            haki-project2/haki/windows/dist/Haki-POS-Setup.exe
+            haki-project2/haki/windows/dist/Haki-POS-Portable.exe
