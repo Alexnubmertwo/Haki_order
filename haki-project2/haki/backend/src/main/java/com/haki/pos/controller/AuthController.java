@@ -1,46 +1,50 @@
 package com.haki.pos.controller;
 
-import com.haki.pos.model.Cashier;
-import com.haki.pos.service.DataStore;
+import com.haki.pos.security.AuthUser;
+import com.haki.pos.security.RequestCtx;
+import com.haki.pos.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/auth")
 @CrossOrigin(origins = "*")
 public class AuthController {
 
-    // Chernovaya versiya: admin zahardkojen. V sleduyuschey versii - v baze s hashem parolya.
-    private static final String ADMIN_USERNAME = "Sardor";
-    private static final String ADMIN_PASSWORD = "Sardor17";
+    private final AuthService auth;
 
-    private final DataStore store;
-
-    public AuthController(DataStore store) {
-        this.store = store;
+    public AuthController(AuthService auth) {
+        this.auth = auth;
     }
 
     public record LoginRequest(String username, String password) {}
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest req) {
-        String username = req.username() == null ? "" : req.username().trim();
-        String password = req.password() == null ? "" : req.password();
+        AuthService.LoginResult r = auth.login(req.username(), req.password());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("token", r.token());
+        body.put("role", r.user().role());
+        body.put("name", r.user().name());
+        body.put("userId", r.user().id());
+        body.put("businessId", r.user().businessId());
+        body.put("businessName", r.businessName());
+        return ResponseEntity.ok(body);
+    }
 
-        if (ADMIN_USERNAME.equalsIgnoreCase(username) && ADMIN_PASSWORD.equals(password)) {
-            return ResponseEntity.ok(Map.of("role", "ADMIN", "name", "Sardor"));
-        }
+    @PostMapping("/logout")
+    public ResponseEntity<?> logout(HttpServletRequest request) {
+        String h = request.getHeader("Authorization");
+        if (h != null && h.startsWith("Bearer ")) auth.logout(h.substring(7).trim());
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
 
-        Optional<Cashier> cashier = store.findCashierByUsername(username);
-        if (cashier.isPresent() && cashier.get().getPassword() != null
-                && cashier.get().getPassword().equals(password)) {
-            Cashier c = cashier.get();
-            return ResponseEntity.ok(Map.of("role", "CASHIER", "name", c.getName(), "cashierId", c.getId()));
-        }
-
-        return ResponseEntity.status(401).body(Map.of("error", "Неверный логин или пароль"));
+    @GetMapping("/me")
+    public AuthUser me() {
+        return RequestCtx.user();
     }
 }

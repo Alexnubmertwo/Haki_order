@@ -15,11 +15,6 @@
         <div class="login-title">Haki</div>
         <div class="login-subtitle">Вход в систему</div>
 
-        <div class="role-tabs">
-            <div class="role-tab active" data-role="ADMIN">Админ</div>
-            <div class="role-tab" data-role="CASHIER">Кассир</div>
-        </div>
-
         <div class="form-grid" style="grid-template-columns: 1fr; max-width: none;">
             <div>
                 <label>Логин</label>
@@ -58,6 +53,7 @@
         </div>
         <div class="user-line" id="branchLine">Главный филиал</div>
 
+        <div class="nav-item superadmin-only role-hidden" data-panel="businesses"><span class="icon">🏢</span> Бизнесы</div>
         <div class="nav-item active" data-panel="pos"><span class="icon">🛒</span> Продажи</div>
         <div class="nav-item" data-panel="receipts"><span class="icon">🧾</span> Чеки</div>
         <div class="nav-item" data-panel="shifts"><span class="icon">🕒</span> Смены</div>
@@ -80,6 +76,7 @@
 
     <!-- MAIN -->
     <div class="main">
+        <div class="biz-banner" id="bizBanner"></div>
 
         <!-- PANEL: PRODAJI (POS) -->
         <div class="panel active" id="panel-pos">
@@ -285,6 +282,32 @@
 
             <h1 style="margin-top:24px;">История смен</h1>
             <div class="shift-history-grid" id="dashShiftHistoryGrid"></div>
+        </div>
+
+        <!-- PANEL: BIZNESY (superadmin) -->
+        <div class="panel" id="panel-businesses">
+            <h1>Бизнесы</h1>
+            <p style="color:var(--text-dim); font-size:13px;">Каждый бизнес — отдельный клиент платформы со своими админами, кассирами, товарами и чеками. «Открыть» — войти в бизнес и увидеть всё, как админ.</p>
+            <div class="toolbar">
+                <button class="btn primary" id="addBusinessBtn">+ Создать бизнес и админа</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Бизнес</th><th>Админы</th><th>Кассиры</th><th>Товары</th><th>Чеки</th><th>Выручка сегодня</th><th>Выручка всего</th><th>Статус</th><th></th></tr></thead>
+                <tbody id="businessesBody"></tbody>
+            </table>
+        </div>
+
+        <!-- PANEL: POLZOVATELI BIZNESA (superadmin) -->
+        <div class="panel" id="panel-business-users">
+            <h1 id="businessUsersTitle">Пользователи</h1>
+            <div class="toolbar">
+                <button class="btn" id="businessUsersBackBtn">← К бизнесам</button>
+                <button class="btn primary" id="addBusinessAdminBtn">+ Добавить админа</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Имя</th><th>Роль</th><th>Логин</th><th>Статус</th><th></th></tr></thead>
+                <tbody id="businessUsersBody"></tbody>
+            </table>
         </div>
 
         <!-- PANEL: FILIALY -->

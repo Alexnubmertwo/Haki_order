@@ -1,0 +1,5 @@
+.git
+**/target
+*.log
+haki-log.txt
+start-haki.ps1

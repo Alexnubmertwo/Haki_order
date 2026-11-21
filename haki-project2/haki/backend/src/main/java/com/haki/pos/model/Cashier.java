@@ -1,5 +1,9 @@
 package com.haki.pos.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+/** Parol' prinimaetsya pri sozdanii, no nikogda ne otdayotsya v otvetah API. */
+@JsonIgnoreProperties(value = "password", allowSetters = true)
 public class Cashier {
     private String id;
     private String name;

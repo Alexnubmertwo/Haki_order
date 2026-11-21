@@ -1,0 +1,21 @@
+# Render Blueprint: New + -> Blueprint -> vybrat' etot repozitoriy.
+# Znacheniya sekretov Render sprosit pri sozdanii (sync: false), v repozitoriy ih net.
+services:
+  - type: web
+    name: haki
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: SUPABASE_DB_USER
+        sync: false
+      - key: SUPABASE_DB_PASSWORD
+        sync: false
+      - key: HAKI_SUPERADMIN_USER
+        sync: false
+      - key: HAKI_SUPERADMIN_PASSWORD
+        sync: false

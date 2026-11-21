@@ -643,3 +643,11 @@ table.data-table tr:hover td { background: var(--bg-card); }
 .btn:active, .qty-btn:active { transform: scale(.95); }
 .btn.primary:hover { filter: brightness(1.06); box-shadow: 0 4px 14px -6px rgba(232,163,61,.5); }
 .btn.danger:hover { filter: brightness(1.08); }
+
+/* skryt' punkty menyu po roli */
+.nav-item.role-hidden { display: none !important; }
+.biz-banner { background: var(--bg-card); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; font-size: 13px; display: none; }
+.biz-banner.show { display: block; }
+.status-pill { display:inline-block; padding:2px 8px; border-radius: 10px; font-size: 12px; }
+.status-pill.on { background: rgba(60,180,100,.18); color: #3cb464; }
+.status-pill.off { background: rgba(220,70,70,.18); color: #dc4646; }

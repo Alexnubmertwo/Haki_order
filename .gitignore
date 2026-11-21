@@ -1,0 +1,7 @@
+# sborka i logi
+target/
+*.log
+haki-log.txt
+# sekrety nikogda ne kommitim
+.env
+*.env

@@ -12,7 +12,13 @@ let dashboardPayMethod = "all";
 
 // kassir, ot imeni kotorogo sovershayutsya deystviya - zapolnyaetsya posle logina.
 let CASHIER_NAME = "";
-let CURRENT_ROLE = ""; // ADMIN / CASHIER
+let CURRENT_ROLE = ""; // SUPERADMIN / ADMIN / CASHIER
+let TOKEN = "";
+let CURRENT_BUSINESS = null; // {id, name} - tol'ko u SUPERADMIN, kogda on otkryl biznes
+
+function esc(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
 
 // ---------- LOGIN ----------
 
@@ -53,27 +59,70 @@ async function doLogin() {
 function applySession(session) {
     CURRENT_ROLE = session.role;
     CASHIER_NAME = session.name;
+    TOKEN = session.token || "";
+    session.businessName && (window.BUSINESS_NAME = session.businessName);
     document.getElementById("loginScreen").style.display = "none";
     document.getElementById("app").style.display = "grid";
+
+    if (CURRENT_ROLE === "SUPERADMIN") {
+        try { CURRENT_BUSINESS = JSON.parse(sessionStorage.getItem("haki_business") || "null"); } catch (e) { CURRENT_BUSINESS = null; }
+    }
+    updateNav();
+
+    if (CURRENT_ROLE === "SUPERADMIN" && !CURRENT_BUSINESS) {
+        switchPanel("businesses");
+    } else {
+        initPos().catch(e => toast("Ошибка загрузки: " + e.message, true));
+    }
+}
+
+/** Pokazyvaet punkty menyu po roli i po tomu, otkryt li biznes u superadmina. */
+function updateNav() {
+    const isSuper = CURRENT_ROLE === "SUPERADMIN";
+    const isCashier = CURRENT_ROLE === "CASHIER";
+    const inBusiness = !isSuper || !!CURRENT_BUSINESS;
+
+    document.querySelectorAll(".nav-item[data-panel]").forEach(item => {
+        let hidden;
+        if (item.classList.contains("superadmin-only")) hidden = !isSuper;
+        else if (item.classList.contains("admin-only")) hidden = !inBusiness || isCashier;
+        else hidden = !inBusiness;
+        item.classList.toggle("role-hidden", hidden);
+    });
+
     document.querySelector(".brand .name").textContent = "Haki";
-    document.querySelector(".brand .role").textContent = session.role === "ADMIN" ? "Владелец" : "Кассир: " + session.name;
+    const roleEl = document.querySelector(".brand .role");
+    if (isSuper) roleEl.textContent = CURRENT_BUSINESS ? "Суперадмин · " + CURRENT_BUSINESS.name : "Суперадмин";
+    else if (isCashier) roleEl.textContent = "Кассир: " + CASHIER_NAME;
+    else roleEl.textContent = (window.BUSINESS_NAME ? window.BUSINESS_NAME + " · " : "") + "Админ";
 
-    const isAdmin = session.role === "ADMIN";
-    document.querySelectorAll(".nav-item.admin-only").forEach(item => item.classList.toggle("role-hidden", !isAdmin));
-
-    initPos().catch(e => toast("Ошибка загрузки: " + e.message, true));
+    const banner = document.getElementById("bizBanner");
+    if (isSuper && CURRENT_BUSINESS) {
+        banner.textContent = "Вы просматриваете бизнес: " + CURRENT_BUSINESS.name + " (нажмите «Бизнесы» в меню, чтобы вернуться)";
+        banner.classList.add("show");
+    } else {
+        banner.classList.remove("show");
+    }
 }
 
 function logout() {
-    localStorage.removeItem("haki_session");
-    location.reload();
+    const t = TOKEN;
+    const done = () => {
+        localStorage.removeItem("haki_session");
+        sessionStorage.removeItem("haki_business");
+        location.reload();
+    };
+    if (!t) return done();
+    fetch(API + "/auth/logout", { method: "POST", headers: { "Authorization": "Bearer " + t } }).finally(done);
 }
 
 function tryRestoreSession() {
     const raw = localStorage.getItem("haki_session");
     if (!raw) return;
     try {
-        applySession(JSON.parse(raw));
+        const session = JSON.parse(raw);
+        if (!session.token) { localStorage.removeItem("haki_session"); return; }
+        applySession(session);
     } catch (e) { localStorage.removeItem("haki_session"); }
 }
 
@@ -92,10 +141,17 @@ function toast(msg, isError = false) {
 }
 
 async function api(path, options = {}) {
-    const res = await fetch(API + path, {
-        headers: { "Content-Type": "application/json" },
-        ...options,
-    });
+    const headers = { "Content-Type": "application/json" };
+    if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+    if (CURRENT_ROLE === "SUPERADMIN" && CURRENT_BUSINESS) headers["X-Business-Id"] = CURRENT_BUSINESS.id;
+    const res = await fetch(API + path, { ...options, headers: { ...headers, ...(options.headers || {}) } });
+    if (res.status === 401) {
+        localStorage.removeItem("haki_session");
+        sessionStorage.removeItem("haki_business");
+        toast("Сессия истекла — войдите заново", true);
+        setTimeout(() => location.reload(), 900);
+        throw new Error("Сессия истекла");
+    }
     if (!res.ok) {
         let msg = "Ошибка запроса";
         try { const j = await res.json(); msg = j.error || msg; } catch (e) {}
@@ -140,6 +196,12 @@ document.querySelectorAll(".nav-item[data-panel]").forEach(item => {
 });
 
 function switchPanel(name) {
+    if (name === "businesses" && CURRENT_BUSINESS) {
+        // vyhod iz rezhima prosmotra biznesa
+        CURRENT_BUSINESS = null;
+        sessionStorage.removeItem("haki_business");
+        updateNav();
+    }
     document.querySelectorAll(".nav-item[data-panel]").forEach(i => i.classList.toggle("active", i.dataset.panel === name));
     document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
 
@@ -154,6 +216,7 @@ function switchPanel(name) {
     if (name === "dashboard") loadDashboard();
     if (name === "branches") loadBranches();
     if (name === "cashiers") loadCashiers();
+    if (name === "businesses") loadBusinesses();
 }
 
 // ---------- POS ----------
@@ -760,7 +823,7 @@ async function loadBranches() {
     body.innerHTML = "";
     branches.forEach(b => {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${b.name}</td><td>${b.address || "—"}</td><td><button class="btn danger" data-id="${b.id}">Удалить</button></td>`;
+        tr.innerHTML = `<td>${esc(b.name)}</td><td>${esc(b.address) || "—"}</td><td><button class="btn danger" data-id="${esc(b.id)}">Удалить</button></td>`;
         tr.querySelector("button").onclick = async () => { await api("/branches/" + b.id, { method: "DELETE" }); loadBranches(); };
         body.appendChild(tr);
     });
@@ -781,7 +844,7 @@ async function loadCashiers() {
     body.innerHTML = "";
     cashiers.forEach(c => {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${c.name}</td><td>${c.role}</td><td>${c.username || "—"}</td><td>${c.branchName || "—"}</td><td><button class="btn danger" data-id="${c.id}">Удалить</button></td>`;
+        tr.innerHTML = `<td>${esc(c.name)}</td><td>${esc(c.role)}</td><td>${esc(c.username) || "—"}</td><td>${esc(c.branchName) || "—"}</td><td><button class="btn danger" data-id="${esc(c.id)}">Удалить</button></td>`;
         tr.querySelector("button").onclick = async () => { await api("/cashiers/" + c.id, { method: "DELETE" }); loadCashiers(); };
         body.appendChild(tr);
     });
@@ -791,14 +854,16 @@ document.getElementById("addCashierBtn").onclick = async () => {
     if (!name) return;
     const username = prompt("Логин для входа кассира:");
     if (!username) return;
-    const password = prompt("Пароль для входа кассира:");
+    const password = prompt("Пароль для входа кассира (не короче 6 символов):");
     if (!password) return;
-    await api("/cashiers", {
-        method: "POST",
-        body: JSON.stringify({ name, username, password, role: "Кассир", branchName: "Главный филиал" })
-    });
-    toast("Кассир добавлен — логин: " + username);
-    loadCashiers();
+    try {
+        await api("/cashiers", {
+            method: "POST",
+            body: JSON.stringify({ name, username, password, role: "Кассир", branchName: "Главный филиал" })
+        });
+        toast("Кассир добавлен — логин: " + username);
+        loadCashiers();
+    } catch (e) { toast(e.message, true); }
 };
 
 // ---------- NASTROYKI: admin cash note ----------
@@ -815,6 +880,131 @@ document.getElementById("settingsNoteBtn").onclick = async () => {
         toast("Подсказка сохранена — кассир увидит её при открытии смены");
         document.getElementById("settingsNoteAmount").value = "";
         document.getElementById("settingsNoteComment").value = "";
+    } catch (e) { toast(e.message, true); }
+};
+
+// ---------- SUPERADMIN: biznesy ----------
+
+async function loadBusinesses() {
+    const body = document.getElementById("businessesBody");
+    body.innerHTML = '<tr><td colspan="9">Загрузка…</td></tr>';
+    try {
+        const list = await api("/superadmin/businesses");
+        body.innerHTML = "";
+        if (list.length === 0) {
+            body.innerHTML = '<tr><td colspan="9">Бизнесов пока нет. Нажмите «Создать бизнес и админа».</td></tr>';
+            return;
+        }
+        list.forEach(b => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td><b>${esc(b.name)}</b></td><td>${b.admins}</td><td>${b.cashiers}</td><td>${b.products}</td><td>${b.orders}</td>
+                <td>${money(b.revenueToday)}</td><td>${money(b.revenue)}</td>
+                <td><span class="status-pill ${b.active ? "on" : "off"}">${b.active ? "активен" : "отключён"}</span></td>
+                <td style="white-space:nowrap">
+                    <button class="btn primary" data-act="open">Открыть</button>
+                    <button class="btn" data-act="users">Админы</button>
+                    <button class="btn ${b.active ? "danger" : ""}" data-act="toggle">${b.active ? "Отключить" : "Включить"}</button>
+                </td>`;
+            tr.querySelector('[data-act="open"]').onclick = () => openBusiness(b);
+            tr.querySelector('[data-act="users"]').onclick = () => openBusinessUsers(b);
+            tr.querySelector('[data-act="toggle"]').onclick = async () => {
+                if (b.active && !confirm("Отключить бизнес «" + b.name + "»? Все его пользователи не смогут войти.")) return;
+                try {
+                    await api("/superadmin/businesses/" + encodeURIComponent(b.id) + "/active", { method: "POST", body: JSON.stringify({ active: !b.active }) });
+                    loadBusinesses();
+                } catch (e) { toast(e.message, true); }
+            };
+            body.appendChild(tr);
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="9">Не удалось загрузить: ' + esc(e.message) + '</td></tr>';
+    }
+}
+
+function openBusiness(b) {
+    CURRENT_BUSINESS = { id: b.id, name: b.name };
+    sessionStorage.setItem("haki_business", JSON.stringify(CURRENT_BUSINESS));
+    cart = [];
+    activeCategory = "Все";
+    updateNav();
+    switchPanel("pos");
+    initPos().then(() => renderCart()).catch(e => toast("Ошибка загрузки: " + e.message, true));
+}
+
+document.getElementById("addBusinessBtn").onclick = async () => {
+    const businessName = prompt("Название бизнеса:");
+    if (!businessName) return;
+    const adminName = prompt("Имя администратора этого бизнеса:");
+    if (!adminName) return;
+    const username = prompt("Логин администратора (не короче 3 символов, без пробелов):");
+    if (!username) return;
+    const password = prompt("Пароль администратора (не короче 6 символов):");
+    if (!password) return;
+    try {
+        await api("/superadmin/businesses", { method: "POST", body: JSON.stringify({ businessName, adminName, username, password }) });
+        toast("Бизнес создан. Логин админа: " + username);
+        loadBusinesses();
+    } catch (e) { toast(e.message, true); }
+};
+
+let usersBusiness = null;
+
+async function openBusinessUsers(b) {
+    usersBusiness = b;
+    document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-business-users"));
+    document.getElementById("businessUsersTitle").textContent = "Пользователи: " + b.name;
+    await loadBusinessUsers();
+}
+
+async function loadBusinessUsers() {
+    const body = document.getElementById("businessUsersBody");
+    body.innerHTML = '<tr><td colspan="5">Загрузка…</td></tr>';
+    try {
+        const users = await api("/superadmin/businesses/" + encodeURIComponent(usersBusiness.id) + "/users");
+        body.innerHTML = "";
+        users.forEach(u => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>${esc(u.name)}</td><td>${u.role === "ADMIN" ? "Админ" : "Кассир"}</td><td>${esc(u.username)}</td>
+                <td><span class="status-pill ${u.active ? "on" : "off"}">${u.active ? "активен" : "отключён"}</span></td>
+                <td style="white-space:nowrap">
+                    <button class="btn" data-act="pwd">Новый пароль</button>
+                    <button class="btn ${u.active ? "danger" : ""}" data-act="toggle">${u.active ? "Отключить" : "Включить"}</button>
+                </td>`;
+            tr.querySelector('[data-act="pwd"]').onclick = async () => {
+                const password = prompt("Новый пароль для " + u.username + " (не короче 6 символов):");
+                if (!password) return;
+                try {
+                    await api("/superadmin/users/" + encodeURIComponent(u.id) + "/password", { method: "POST", body: JSON.stringify({ password }) });
+                    toast("Пароль изменён");
+                } catch (e) { toast(e.message, true); }
+            };
+            tr.querySelector('[data-act="toggle"]').onclick = async () => {
+                try {
+                    await api("/superadmin/users/" + encodeURIComponent(u.id) + "/active", { method: "POST", body: JSON.stringify({ active: !u.active }) });
+                    loadBusinessUsers();
+                } catch (e) { toast(e.message, true); }
+            };
+            body.appendChild(tr);
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="5">Не удалось загрузить: ' + esc(e.message) + '</td></tr>';
+    }
+}
+
+document.getElementById("businessUsersBackBtn").onclick = () => switchPanel("businesses");
+
+document.getElementById("addBusinessAdminBtn").onclick = async () => {
+    if (!usersBusiness) return;
+    const name = prompt("Имя нового администратора:");
+    if (!name) return;
+    const username = prompt("Логин (не короче 3 символов, без пробелов):");
+    if (!username) return;
+    const password = prompt("Пароль (не короче 6 символов):");
+    if (!password) return;
+    try {
+        await api("/superadmin/businesses/" + encodeURIComponent(usersBusiness.id) + "/admins", { method: "POST", body: JSON.stringify({ name, username, password }) });
+        toast("Админ добавлен");
+        loadBusinessUsers();
     } catch (e) { toast(e.message, true); }
 };
 
