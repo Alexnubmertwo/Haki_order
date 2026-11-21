@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, net } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -9,6 +9,22 @@ if (!app.requestSingleInstanceLock()) {
 let win = null;
 let serverUrl = '';
 let errorShown = false;
+let coldRetries = 0;
+
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+
+// Не даём бесплатному серверу засыпать: лёгкий запрос раз в 4 минуты, пока приложение открыто.
+function keepAlive() {
+  if (!serverUrl) return;
+  try {
+    const r = net.request({ method: 'GET', url: serverUrl.replace(/\/+$/, '') + '/css/extra.css?ka=' + Date.now() });
+    r.on('response', (resp) => resp.on('data', () => {}));
+    r.on('error', () => {});
+    r.end();
+  } catch (e) {}
+}
+setInterval(keepAlive, 4 * 60 * 1000);
 
 // ---------- настройки (адрес сервера) ----------
 const cfgFile = () => path.join(app.getPath('userData'), 'config.json');
@@ -99,7 +115,12 @@ ipcMain.on('haki-prompt', (event, message, def) => {
 // ---------- сервер ----------
 function loadServer() {
   errorShown = false;
-  if (win && serverUrl) win.loadURL(serverUrl);
+  if (win && serverUrl) {
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+      '<body style="margin:0;background:#0f1115;color:#aab;font:18px Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">Подключение к серверу…</body>'));
+    win.loadURL(serverUrl);
+    keepAlive();
+  }
 }
 
 async function changeServer() {
@@ -138,6 +159,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     show: false,
+    backgroundColor: '#0f1115',
     autoHideMenuBar: true,
     title: 'Haki POS',
     icon: path.join(__dirname, 'build', 'icon.ico'),
@@ -145,7 +167,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: false,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false,
+      spellcheck: false
     }
   });
   win.maximize();
@@ -164,8 +188,12 @@ function createWindow() {
     if (!sameHost(url)) { e.preventDefault(); shell.openExternal(url); }
   });
   win.webContents.on('did-fail-load', (_e, code, _desc, _url, isMainFrame) => {
-    if (isMainFrame && code !== -3) showConnectionError();
+    if (!isMainFrame || code === -3) return;
+    // сервер мог просто просыпаться: тихо повторяем несколько раз
+    if (coldRetries < 6) { coldRetries++; setTimeout(() => { if (win && serverUrl) win.loadURL(serverUrl); }, 5000); }
+    else { coldRetries = 0; showConnectionError(); }
   });
+  win.webContents.on('did-finish-load', () => { coldRetries = 0; });
   win.on('closed', () => { win = null; });
 }
 
